@@ -177,10 +177,14 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     entry = load_db()["secrets"].get(secret)
     if not entry or not entry["status"]:
         return await update.message.reply_text("Нет данных от агента.")
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 Reboot", callback_data=f"reboot:{secret}"),
-        InlineKeyboardButton("⏻ Shutdown", callback_data=f"shutdown:{secret}")
-    ]])
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔃 Обновить", callback_data=f"status:{secret}")],
+        [
+            InlineKeyboardButton("🔄 Reboot", callback_data=f"reboot:{secret}"),
+            InlineKeyboardButton("⏻ Shutdown", callback_data=f"shutdown:{secret}")
+        ]
+    ])
     await update.message.reply_text(entry["status"], parse_mode="Markdown", reply_markup=kb)
 
 async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -193,11 +197,25 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     entry = db["secrets"].get(secret)
     if not entry or not is_owner(entry, q.from_user.id):
         return await q.edit_message_text("🚫 Нет доступа.")
-    if action not in {"reboot", "shutdown"}:
-        return
-    entry.setdefault("pending", []).append(action)
-    save_db(db)
-    await q.edit_message_text(f"☑️ *{action}* поставлена в очередь.", parse_mode="Markdown")
+
+    # ────────────── handle inline callback actions ──────────────
+    if action == "status":
+        # refresh the stats and show the same keyboard again
+        if not entry["status"]:
+            return await q.edit_message_text("Нет данных от агента.")
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔃 Обновить", callback_data=f"status:{secret}")],
+            [
+                InlineKeyboardButton("🔄 Reboot", callback_data=f"reboot:{secret}"),
+                InlineKeyboardButton("⏻ Shutdown", callback_data=f"shutdown:{secret}")
+            ]
+        ])
+        return await q.edit_message_text(entry["status"], parse_mode="Markdown", reply_markup=kb)
+
+    elif action in {"reboot", "shutdown"}:
+        entry.setdefault("pending", []).append(action)
+        save_db(db)
+        return await q.edit_message_text(f"☑️ *{action}* поставлена в очередь.", parse_mode="Markdown")
 
 # ────────────────────────── FastAPI for agents ─────────────────────────────
 app = FastAPI()
