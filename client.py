@@ -1,9 +1,4 @@
-"""pc_agent.py – Lightweight PC agent
-
-v2025-05-18 ip-prompt – при первом запуске спрашиваем *только* IPv4-адрес
-сервера; URL собирается как `http://<ip>:8000`. Пустой ввод = 127.0.0.1
-(локальный сервер).
-"""
+"""pc_agent.py – Lightweight PC agent"""
 from __future__ import annotations
 
 import os
@@ -92,6 +87,7 @@ def gather_disks() -> List[str]:
 def gather_status() -> str:
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory()
+    swap = psutil.swap_memory()
     uptime = time.time() - psutil.boot_time()
     temp = (
         f"{psutil.sensors_temperatures()['coretemp'][0].current:.1f} °C"
@@ -103,6 +99,7 @@ def gather_status() -> str:
         f"🖥️ CPU: {cpu:.1f}%",
         f"🌡️ CPU Temp: {temp}",
         f"🧠 RAM: {human_bytes(mem.used)} / {human_bytes(mem.total)} ({mem.percent:.1f}%)",
+        f"🧠 SWAP: {human_bytes(swap.used)} / {human_bytes(swap.total)} ({swap.percent:.1f}%)",
     ] + gather_disks() + [f"⏳ Uptime: {timedelta(seconds=int(uptime))}"]
     return "\n".join(lines)
 

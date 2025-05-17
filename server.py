@@ -1,19 +1,4 @@
-"""remote_bot_server.py – Telegram bot + FastAPI backend
-
-v2025-05-18 multi-owner
-────────────────────────
-Теперь один и тот же секрет может принадлежать *нескольким* людям. Схема
-DB поменялась:
-    "owners": [user_id1, user_id2, …]
-Команды:
-  • /newkey [name]               – создать секрет (владельцем становится автор).
-  • /linkkey <secret>            – «подписаться» на существующий секрет.
-  • /setactivekey <secret>       – выбрать активный.
-  • /list                        – показать свои секреты, пометив активный.
-  • /status / /reboot кнопки     – всё как раньше, права есть у любого owner.
-
-Зависимости: python-telegram-bot==20.* fastapi uvicorn[standard] psutil requests
-"""
+"""remote_bot_server.py – Telegram bot + FastAPI backend"""
 from __future__ import annotations
 
 import json
