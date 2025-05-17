@@ -1,4 +1,3 @@
-"""remote_bot_server.py – Telegram bot + FastAPI backend"""
 from __future__ import annotations
 
 import json
@@ -9,7 +8,7 @@ import string
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -72,7 +71,8 @@ OWNER_HELP = (
     "/linkkey <секрет> – подписаться на чужой ключ.\n"
     "/setactivekey <ключ> – выбрать активный.\n"
     "/list – показать свои ключи.\n"
-    "/status [секрет] – метрики + кнопки."
+    "/status [секрет] – метрики + кнопки.\n"
+    "/renamekey <секрет> <имя> – переименовать ключ."
 )
 
 def gen_secret(n=20):
@@ -155,8 +155,21 @@ def resolve_secret(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> str | None
         return None
     return secret
 
-# status / buttons ----------------------------------------------------------
+# rename key command --------------------------------------------------------
+async def cmd_renamekey(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if len(ctx.args) < 2:
+        return await update.message.reply_text("Синтаксис: /renamekey <secret> <new_name>")
+    secret = ctx.args[0]
+    new_name = " ".join(ctx.args[1:])[:30]
+    db = load_db()
+    entry = db["secrets"].get(secret)
+    if not entry or not is_owner(entry, update.effective_user.id):
+        return await update.message.reply_text("🚫 Нет доступа к этому ключу или ключ не найден.")
+    entry["nickname"] = new_name
+    save_db(db)
+    await update.message.reply_text(f"✅ Название ключа `{secret}` изменено на: {new_name}", parse_mode="Markdown")
 
+# status / buttons ----------------------------------------------------------
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     secret = resolve_secret(update, ctx)
     if not secret:
@@ -164,9 +177,11 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     entry = load_db()["secrets"].get(secret)
     if not entry or not entry["status"]:
         return await update.message.reply_text("Нет данных от агента.")
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Reboot", callback_data=f"reboot:{secret}"), InlineKeyboardButton("⏻ Shutdown", callback_data=f"shutdown:{secret}")]])
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔄 Reboot", callback_data=f"reboot:{secret}"),
+        InlineKeyboardButton("⏻ Shutdown", callback_data=f"shutdown:{secret}")
+    ]])
     await update.message.reply_text(entry["status"], parse_mode="Markdown", reply_markup=kb)
-
 
 async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -226,6 +241,7 @@ def main():
     app_tg.add_handler(CommandHandler("setactivekey", cmd_setactive))
     app_tg.add_handler(CommandHandler("list", cmd_list))
     app_tg.add_handler(CommandHandler("status", cmd_status))
+    app_tg.add_handler(CommandHandler("renamekey", cmd_renamekey))
     app_tg.add_handler(CallbackQueryHandler(cb_action))
 
     log.info("🤖 Polling…")
