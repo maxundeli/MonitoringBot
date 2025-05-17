@@ -83,10 +83,10 @@ def save_db(db: Dict[str, Any]):
 # ──────────────────────── Telegram command handlers ───────────────────────
 OWNER_HELP = (
     "Команды:\n"
-    "/newkey [имя] – создать секрет.\n"
-    "/linkkey <секрет> – подписаться на чужой.\n"
-    "/setactivekey <секрет> – выбрать активный.\n"
-    "/list – показать свои секреты.\n"
+    "/newkey [имя] – создать ключ.\n"
+    "/linkkey <секрет> – подписаться на чужой ключ.\n"
+    "/setactivekey <ключ> – выбрать активный.\n"
+    "/list – показать свои ключи.\n"
     "/status [секрет] – метрики + кнопки."
 )
 
@@ -178,7 +178,7 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Нет доступа или активного ключа.")
     entry = load_db()["secrets"].get(secret)
     if not entry or not entry["status"]:
-        return await update.message.reply_text("😴 Нет данных от агента.")
+        return await update.message.reply_text("Нет данных от агента.")
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Reboot", callback_data=f"reboot:{secret}"), InlineKeyboardButton("⏻ Shutdown", callback_data=f"shutdown:{secret}")]])
     await update.message.reply_text(entry["status"], parse_mode="Markdown", reply_markup=kb)
 

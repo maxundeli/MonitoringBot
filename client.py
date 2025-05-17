@@ -101,7 +101,7 @@ def gather_status() -> str:
     lines = [
         "💻 *PC stats*",
         f"🖥️ CPU: {cpu:.1f}%",
-        f"🌡️ Temp: {temp}",
+        f"🌡️ CPU Temp: {temp}",
         f"🧠 RAM: {human_bytes(mem.used)} / {human_bytes(mem.total)} ({mem.percent:.1f}%)",
     ] + gather_disks() + [f"⏳ Uptime: {timedelta(seconds=int(uptime))}"]
     return "\n".join(lines)
