@@ -1,23 +1,13 @@
-"""Lightweight agent that runs on a PC and reports to *remote_bot_server.py*.
+"""pc_agent.py – Lightweight PC agent sending stats to remote bot server.
 
-* requirements: python >=3.8, psutil, requests
-* configuration via env vars (or edit constants below):
-    AGENT_SECRET   – secret obtained from /newkey
-    AGENT_SERVER   – base URL of server (e.g. http://example.com:8000)
-    AGENT_INTERVAL – seconds between status pushes (default 30)
+v2025‑05‑17‑persist – теперь секрет (`AGENT_SECRET`) запоминается в `.env`.
+Алгоритм:
+  1. Пытаемся взять `AGENT_SECRET` из переменных окружения.
+  2. Если нет – читаем из файла `.env` в текущей папке.
+  3. Если всё ещё пусто – спрашиваем в консоли и тут же записываем в `.env`.
+     При следующем запуске запоминать уже не придётся.
 
-Metrics sent every cycle:
-🖥️ CPU usage   – numeric %
-🌡️ Temperature – degrees Celsius
-🧠 RAM usage   – human‑readable bytes & %
-💾 Disks       – per‑mountpoint usage bar with % and bytes
-⏳ Uptime      – human duration
-
-Accepted commands from server:
-  • reboot   – immediate reboot (admin rights required)
-  • shutdown – immediate power‑off (admin rights required)
-
-Disk usage bars are rendered with ten squares (■ = used, □ = free).
+Остальной функционал (метрики, reboot/shutdown) не изменился.
 """
 from __future__ import annotations
 
@@ -27,21 +17,45 @@ import subprocess
 import sys
 import time
 from datetime import timedelta
+from pathlib import Path
 from typing import List
 
 import psutil
 import requests
 
-# ---- config ---------------------------------------------------------------
-SECRET = os.getenv("AGENT_SECRET", "DCLpF6dCtokePlWSPmNn")
+# ────────────────────────── CONFIG ─────────────────────────────────────────
+ENV_FILE = Path(".env")
+
+
+def _load_dotenv() -> None:
+    """Populate os.environ from .env if variables not already set."""
+    if not ENV_FILE.exists():
+        return
+    for line in ENV_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        os.environ.setdefault(key.strip(), val.strip())
+
+
+_load_dotenv()
+
+SECRET = os.getenv("AGENT_SECRET")
+if not SECRET:
+    SECRET = input("Enter AGENT_SECRET: ").strip()
+    if not SECRET:
+        print("❌ AGENT_SECRET is required. Exiting.")
+        sys.exit(1)
+    # append to .env
+    with ENV_FILE.open("a", encoding="utf-8") as f:
+        f.write(f"AGENT_SECRET={SECRET}\n")
+        print("🔏 AGENT_SECRET saved to .env")
+
 SERVER = os.getenv("AGENT_SERVER", "http://localhost:8000")
 INTERVAL = int(os.getenv("AGENT_INTERVAL", "30"))
 
-if not SECRET:
-    print("AGENT_SECRET env var missing")
-    sys.exit(1)
-
-# ---- helpers --------------------------------------------------------------
+# ────────────────────────── HELPERS ────────────────────────────────────────
 
 def human_bytes(num: float) -> str:
     for unit in ["B", "KiB", "MiB", "GiB", "TiB"]:
@@ -52,17 +66,14 @@ def human_bytes(num: float) -> str:
 
 
 def disk_bar(percent: float, length: int = 10) -> str:
-    """Return a text bar of ■/□ squares representing percentage used."""
     filled = int(round(percent * length / 100))
     return "■" * filled + "□" * (length - filled)
 
 
 def gather_disks() -> List[str]:
-    """Collect per‑partition disk usage lines with emoji and bars."""
     lines: List[str] = []
     seen = set()
     for part in psutil.disk_partitions(all=False):
-        # Skip duplicates & non‑physical mounts (e.g., /snap, virtiofs)
         if part.mountpoint in seen or part.fstype.lower() in {"tmpfs", "devtmpfs"}:
             continue
         seen.add(part.mountpoint)
@@ -73,16 +84,14 @@ def gather_disks() -> List[str]:
         if usage.total == 0:
             continue
         bar = disk_bar(usage.percent)
-        line = (
+        lines.append(
             f"💾 {part.mountpoint}: {bar} {usage.percent:.0f}% "
             f"({human_bytes(usage.used)} / {human_bytes(usage.total)})"
         )
-        lines.append(line)
     return lines
 
 
 def gather_status() -> str:
-    """Build a multi‑line Markdown status block for push()."""
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory()
     uptime = time.time() - psutil.boot_time()
@@ -96,30 +105,24 @@ def gather_status() -> str:
         "💻 *PC stats*",
         f"🖥️ CPU: {cpu:.1f}%",
         f"🌡️ Temp: {temp}",
-        (
-            f"🧠 RAM: {human_bytes(mem.used)} / {human_bytes(mem.total)} "
-            f"({mem.percent:.1f}%)"
-        ),
+        f"🧠 RAM: {human_bytes(mem.used)} / {human_bytes(mem.total)} ({mem.percent:.1f}%)",
     ]
-
     lines.extend(gather_disks())
     lines.append(f"⏳ Uptime: {str(timedelta(seconds=int(uptime)))}")
     return "\n".join(lines)
 
 
 def push_status(text: str) -> None:
-    url = f"{SERVER}/api/push/{SECRET}"
     try:
-        r = requests.post(url, json={"text": text}, timeout=10)
+        r = requests.post(f"{SERVER}/api/push/{SECRET}", json={"text": text}, timeout=10)
         r.raise_for_status()
     except Exception as e:
         print("push error:", e)
 
 
 def pull_commands() -> List[str]:
-    url = f"{SERVER}/api/pull/{SECRET}"
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(f"{SERVER}/api/pull/{SECRET}", timeout=10)
         r.raise_for_status()
         return r.json().get("commands", [])
     except Exception as e:
@@ -127,7 +130,7 @@ def pull_commands() -> List[str]:
         return []
 
 
-# ---- actions --------------------------------------------------------------
+# ────────────────────────── ACTIONS ───────────────────────────────────────
 
 def do_reboot():
     try:
@@ -149,11 +152,10 @@ def do_shutdown():
         print("shutdown failed:", e)
 
 
-# ---- main loop ------------------------------------------------------------
+# ────────────────────────── MAIN LOOP ─────────────────────────────────────
 print("Agent started. Server:", SERVER)
 while True:
-    stats = gather_status()
-    push_status(stats)
+    push_status(gather_status())
 
     for cmd in pull_commands():
         if cmd == "reboot":
