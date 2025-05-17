@@ -67,12 +67,12 @@ def save_db(db: Dict[str, Any]):
 # ──────────────────────── Telegram command handlers ───────────────────────
 OWNER_HELP = (
     "Команды:\n"
-    "/newkey [имя] – создать ключ.\n"
-    "/linkkey <секрет> – подписаться на чужой ключ.\n"
+    "/newkey <имя> – создать ключ.\n"
+    "/linkkey <ключ> – подписаться на чужой ключ.\n"
     "/setactivekey <ключ> – выбрать активный.\n"
     "/list – показать свои ключи.\n"
-    "/status [секрет] – метрики + кнопки.\n"
-    "/renamekey <секрет> <имя> – переименовать ключ."
+    "/status <секрет> – метрики + кнопки.\n"
+    "/renamekey <ключ> <имя> – переименовать ключ."
 )
 
 def gen_secret(n=20):
@@ -108,7 +108,7 @@ async def cmd_newkey(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_linkkey(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
-        return await update.message.reply_text("Синтаксис: /linkkey <secret>")
+        return await update.message.reply_text("Синтаксис: /linkkey <key>")
     secret = ctx.args[0]
     db = load_db()
     entry = db["secrets"].get(secret)
@@ -124,7 +124,7 @@ async def cmd_linkkey(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setactive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
-        return await update.message.reply_text("/setactivekey <secret>")
+        return await update.message.reply_text("/setactivekey <key>")
     secret = ctx.args[0]
     db = load_db()
     entry = db["secrets"].get(secret)
@@ -158,7 +158,7 @@ def resolve_secret(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> str | None
 # rename key command --------------------------------------------------------
 async def cmd_renamekey(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(ctx.args) < 2:
-        return await update.message.reply_text("Синтаксис: /renamekey <secret> <new_name>")
+        return await update.message.reply_text("Синтаксис: /renamekey <key> <new_name>")
     secret = ctx.args[0]
     new_name = " ".join(ctx.args[1:])[:30]
     db = load_db()
