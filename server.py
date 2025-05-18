@@ -115,7 +115,7 @@ OWNER_HELP = (
     "Команды:\n"
     "/newkey <имя> – создать ключ.\n"
     "/linkkey <ключ> – подписаться на чужой ключ.\n"
-    "/setactivekey <ключ> – выбрать активный.\n"
+    "/set <ключ> – выбрать активный.\n"
     "/list – показать свои ключи.\n"
     "/status <секрет> – метрики + кнопки.\n"
     "/renamekey <ключ> <имя> – переименовать ключ."
@@ -170,7 +170,7 @@ async def cmd_linkkey(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setactive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
-        return await update.message.reply_text("/setactivekey <key>")
+        return await update.message.reply_text("/set <key>")
     secret = ctx.args[0]
     db = load_db()
     entry = db["secrets"].get(secret)
@@ -309,7 +309,7 @@ def main():
     app_tg.add_handler(CommandHandler(["start", "help"], cmd_start))
     app_tg.add_handler(CommandHandler("newkey", cmd_newkey))
     app_tg.add_handler(CommandHandler("linkkey", cmd_linkkey))
-    app_tg.add_handler(CommandHandler("setactivekey", cmd_setactive))
+    app_tg.add_handler(CommandHandler("set", cmd_setactive))
     app_tg.add_handler(CommandHandler("list", cmd_list))
     app_tg.add_handler(CommandHandler("status", cmd_status))
     app_tg.add_handler(CommandHandler("renamekey", cmd_renamekey))
