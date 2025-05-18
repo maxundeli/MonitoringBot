@@ -129,6 +129,7 @@ def _init_metric_db() -> sqlite3.Connection:
 sql = _init_metric_db()
 
 def record_metric(secret: str, cpu: float, ram: float):
+    log.debug("REC %s cpu=%s ram=%s", secret, cpu, ram)
     sql.execute(
         "INSERT INTO metrics(secret, ts, cpu, ram) VALUES(?,?,?,?)",
         (secret, int(time.time()), cpu, ram),
@@ -277,6 +278,8 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ───────────────────- Plot helpers ─────────────────────────────────────────
 def plot_metric(secret: str, metric: str, seconds: int) -> io.BytesIO | None:
     rows = fetch_metrics(secret, int(time.time()) - seconds)
+    log.info("Plot %s %s %s -> %d rows",
+             secret, metric, seconds, len(rows))
     if not rows:
         return None
     ts = [datetime.fromtimestamp(r[0]) for r in rows]
