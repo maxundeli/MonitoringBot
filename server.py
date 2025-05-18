@@ -307,8 +307,6 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await q.answer()
     parts = q.data.split(":")
-    if not parts:
-        return
     action = parts[0]
     db = load_db()
 
@@ -334,36 +332,33 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # ───── graph selection ─────
     if action == "graph":
-        metric, secret = parts[1], parts[2]
-        if len(parts) == 3:  # показать выбор интервала
+        metric = parts[1]
+
+
+        if len(parts) == 3:  # graph:<metric>:<secret>
+            secret = parts[2]
             kb = InlineKeyboardMarkup(
                 [
                     [
-                        InlineKeyboardButton(
-                            "10 мин", callback_data=f"graph:{metric}:600:{secret}"
-                        ),
-                        InlineKeyboardButton(
-                            "1 час", callback_data=f"graph:{metric}:3600:{secret}"
-                        ),
-                        InlineKeyboardButton(
-                            "24 ч", callback_data=f"graph:{metric}:86400:{secret}"
-                        ),
+                        InlineKeyboardButton("10 мин", callback_data=f"graph:{metric}:600:{secret}"),
+                        InlineKeyboardButton("1 час", callback_data=f"graph:{metric}:3600:{secret}"),
+                        InlineKeyboardButton("24 ч", callback_data=f"graph:{metric}:86400:{secret}"),
                     ],
                     [InlineKeyboardButton("◀️ Назад", callback_data=f"status:{secret}")],
                 ]
             )
             return await q.edit_message_reply_markup(reply_markup=kb)
 
-        # строим график
+
         seconds = int(parts[2])
+        secret = parts[3]
+
         buf = plot_metric(secret, metric, seconds)
         if not buf:
             return await q.edit_message_text("Данных за этот период нет.")
+
         caption = f"{metric.upper()} за {timedelta(seconds=seconds)}"
-        await ctx.bot.send_photo(
-            chat_id=q.message.chat_id, photo=buf, caption=caption
-        )
-        # оставляем прежнее сообщение как есть
+        await ctx.bot.send_photo(chat_id=q.message.chat_id, photo=buf, caption=caption)
         return
 
 # ────────────────────────── FastAPI for agents ─────────────────────────────
