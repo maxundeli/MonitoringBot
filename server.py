@@ -42,8 +42,9 @@ ENV_FILE = Path(".env")
 DB_FILE = Path("db.json")
 METRIC_DB = Path("metrics.sqlite")
 API_PORT = int(os.getenv("PORT", "8000"))
-MAX_CPU: defaultdict[str, float] = defaultdict(float)
-MAX_RAM: defaultdict[str, float] = defaultdict(float)
+SUM_CPU = defaultdict(float)
+SUM_RAM = defaultdict(float)
+COUNTERS = defaultdict(int)
 
 CERT_FILE = Path(os.getenv("SSL_CERT", "cert.pem"))
 KEY_FILE = Path(os.getenv("SSL_KEY", "key.pem"))
@@ -378,28 +379,35 @@ async def push(secret: str, payload: StatusPayload):
     db = load_db()
     if secret not in db["secrets"]:
         raise HTTPException(404)
+
     db["secrets"][secret]["status"] = payload.text
     save_db(db)
 
     cpu_m = CPU_RE.search(payload.text)
     ram_m = RAM_RE.search(payload.text)
-    if cpu_m and ram_m:
-        try:
-            cpu_val = float(cpu_m.group(1))
-            ram_val = float(ram_m.group(1))
-            MAX_CPU[secret] = max(MAX_CPU[secret], cpu_val)
-            MAX_RAM[secret] = max(MAX_RAM[secret], ram_val)
-        except ValueError:
-            pass
+    if not (cpu_m and ram_m):
+        return {"ok": True}
 
+    try:
+        cpu_val = float(cpu_m.group(1))
+        ram_val = float(ram_m.group(1))
+    except ValueError:
+        return {"ok": True}
+
+
+    SUM_CPU[secret] += cpu_val
+    SUM_RAM[secret] += ram_val
     COUNTERS[secret] += 1
+
     if COUNTERS[secret] >= 6:
+        avg_cpu = SUM_CPU[secret] / COUNTERS[secret]
+        avg_ram = SUM_RAM[secret] / COUNTERS[secret]
+
+        record_metric(secret, avg_cpu, avg_ram)
+
+        SUM_CPU[secret] = 0.0
+        SUM_RAM[secret] = 0.0
         COUNTERS[secret] = 0
-        max_cpu = MAX_CPU[secret]
-        max_ram = MAX_RAM[secret]
-        MAX_CPU[secret] = 0.0
-        MAX_RAM[secret] = 0.0
-        record_metric(secret, max_cpu, max_ram)
 
     return {"ok": True}
 
