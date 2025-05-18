@@ -42,6 +42,8 @@ ENV_FILE = Path(".env")
 DB_FILE = Path("db.json")
 METRIC_DB = Path("metrics.sqlite")
 API_PORT = int(os.getenv("PORT", "8000"))
+MAX_CPU: defaultdict[str, float] = defaultdict(float)
+MAX_RAM: defaultdict[str, float] = defaultdict(float)
 
 CERT_FILE = Path(os.getenv("SSL_CERT", "cert.pem"))
 KEY_FILE = Path(os.getenv("SSL_KEY", "key.pem"))
@@ -378,19 +380,26 @@ async def push(secret: str, payload: StatusPayload):
     db["secrets"][secret]["status"] = payload.text
     save_db(db)
 
-    # ─── парсим метрики и каждые 6 push’ей пишем в SQLite ───
+    cpu_m = CPU_RE.search(payload.text)
+    ram_m = RAM_RE.search(payload.text)
+    if cpu_m and ram_m:
+        try:
+            cpu_val = float(cpu_m.group(1))
+            ram_val = float(ram_m.group(1))
+            MAX_CPU[secret] = max(MAX_CPU[secret], cpu_val)
+            MAX_RAM[secret] = max(MAX_RAM[secret], ram_val)
+        except ValueError:
+            pass
+
     COUNTERS[secret] += 1
     if COUNTERS[secret] >= 6:
         COUNTERS[secret] = 0
-        cpu_m = CPU_RE.search(payload.text)
-        ram_m = RAM_RE.search(payload.text)
-        if cpu_m and ram_m:
-            try:
-                cpu_val = float(cpu_m.group(1))
-                ram_val = float(ram_m.group(1))
-                record_metric(secret, cpu_val, ram_val)
-            except ValueError:
-                pass
+        max_cpu = MAX_CPU[secret]
+        max_ram = MAX_RAM[secret]
+        MAX_CPU[secret] = 0.0
+        MAX_RAM[secret] = 0.0
+        record_metric(secret, max_cpu, max_ram)
+
     return {"ok": True}
 
 @app.get("/api/pull/{secret}")
