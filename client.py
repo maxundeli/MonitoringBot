@@ -1,5 +1,6 @@
-"""pc_agent.py – Lightweight PC agent"""
 from __future__ import annotations
+
+"""pc_agent_tls.py – Lightweight PC agent"""
 
 import os
 import platform
@@ -37,7 +38,6 @@ def prompt_ip() -> str:
 SECRET = os.getenv("AGENT_SECRET") or input("Enter AGENT_SECRET: ").strip()
 if not SECRET:
     print("AGENT_SECRET required"); sys.exit(1)
-
 if "AGENT_SECRET" not in os.environ:
     ENV_FILE.write_text((ENV_FILE.read_text() if ENV_FILE.exists() else "") + f"AGENT_SECRET={SECRET}\n")
 
@@ -46,10 +46,24 @@ if not SERVER_IP:
     SERVER_IP = prompt_ip()
     ENV_FILE.write_text((ENV_FILE.read_text() if ENV_FILE.exists() else "") + f"AGENT_SERVER_IP={SERVER_IP}\n")
 
-SERVER = f"http://{SERVER_IP}:8000"
+PORT = os.getenv("AGENT_PORT", "8000")
+USE_HTTPS = os.getenv("AGENT_USE_HTTPS", "1") != "0"
+SCHEME = "https" if USE_HTTPS else "http"
+SERVER = f"{SCHEME}://{SERVER_IP}:{PORT}"
+
+# SSL verification toggle ---------------------------------------------------
+_verify_env = os.getenv("AGENT_VERIFY_SSL", "1")
+CA_FILE = os.getenv("AGENT_CA_FILE")
+if CA_FILE and Path(CA_FILE).exists():
+    VERIFY = CA_FILE  # verify against provided CA bundle / cert
+else:
+    VERIFY = _verify_env != "0"
+
 INTERVAL = int(os.getenv("AGENT_INTERVAL", "30"))
 
-print(f"Config → server {SERVER} interval {INTERVAL}s")
+print(
+    f"Config → server {SERVER} verify={'CA:'+CA_FILE if isinstance(VERIFY,str) else VERIFY} interval {INTERVAL}s"
+)
 
 # ────────────────────────── metric helpers ────────────────────────────────
 
@@ -61,7 +75,7 @@ def human_bytes(num: float) -> str:
     return f"{num:.1f} PiB"
 
 
-def disk_bar(p: float, length=10) -> str:
+def disk_bar(p: float, length: int = 10) -> str:
     filled = int(round(p * length / 100))
     return "■" * filled + "□" * (length - filled)
 
@@ -79,7 +93,8 @@ def gather_disks() -> List[str]:
         if u.total == 0:
             continue
         lines.append(
-            f"💾 {part.mountpoint}: {disk_bar(u.percent)} {u.percent:.0f}% ({human_bytes(u.used)} / {human_bytes(u.total)})"
+            f"💾 {part.mountpoint}: {disk_bar(u.percent)} {u.percent:.0f}% (" \
+            f"{human_bytes(u.used)} / {human_bytes(u.total)})"
         )
     return lines
 
@@ -107,7 +122,9 @@ def gather_status() -> str:
 
 def push_status(txt: str):
     try:
-        r = requests.post(f"{SERVER}/api/push/{SECRET}", json={"text": txt}, timeout=10)
+        r = requests.post(
+            f"{SERVER}/api/push/{SECRET}", json={"text": txt}, timeout=10, verify=VERIFY
+        )
         r.raise_for_status()
     except Exception as e:
         print("push error:", e)
@@ -115,7 +132,7 @@ def push_status(txt: str):
 
 def pull_cmds() -> List[str]:
     try:
-        r = requests.get(f"{SERVER}/api/pull/{SECRET}", timeout=10)
+        r = requests.get(f"{SERVER}/api/pull/{SECRET}", timeout=10, verify=VERIFY)
         r.raise_for_status(); return r.json().get("commands", [])
     except Exception as e:
         print("pull error:", e); return []

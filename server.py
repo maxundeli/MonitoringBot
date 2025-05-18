@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+"""remote_bot_server TLS edition – now with 100% more encryption.
+
+* Generates a self‑signed cert on first run (openssl required).
+* Falls back to plain HTTP if certificates are missing and cannot be created.
+* Otherwise works exactly like the previous screaming pile of features.
+"""
+
 import json
 import logging
 import os
 import secrets
 import string
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -26,7 +34,11 @@ ENV_FILE = Path(".env")
 DB_FILE = Path("db.json")
 API_PORT = int(os.getenv("PORT", "8000"))
 
-# Load/save helpers ---------------------------------------------------------
+# TLS files (override paths via SSL_CERT / SSL_KEY env vars)
+CERT_FILE = Path(os.getenv("SSL_CERT", "cert.pem"))
+KEY_FILE = Path(os.getenv("SSL_KEY", "key.pem"))
+
+# ────────────────────────── helpers ────────────────────────────────────────
 
 def _load_dotenv() -> None:
     if not ENV_FILE.exists():
@@ -37,7 +49,41 @@ def _load_dotenv() -> None:
             os.environ.setdefault(k.strip(), v.strip())
 
 
+def _ensure_ssl() -> None:
+    """Create a self‑signed certificate if none exists."""
+    if CERT_FILE.exists() and KEY_FILE.exists():
+        return
+    logging.info("🔒 Generating self‑signed TLS certificate (%s, %s)…", CERT_FILE, KEY_FILE)
+    try:
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-keyout",
+                str(KEY_FILE),
+                str("-out"),
+                str(CERT_FILE),
+                "-days",
+                "825",
+                "-nodes",
+                "-subj",
+                "/CN=localhost",
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        logging.info("✅ Self‑signed certificate created.")
+    except Exception as exc:
+        logging.warning("⚠️  Failed to generate certificate automatically: %s", exc)
+        logging.warning("   TLS will be disabled unless you supply cert.pem/key.pem manually.")
+
+
 _load_dotenv()
+_ensure_ssl()
 
 TOKEN = os.getenv("BOT_TOKEN") or input("Enter Telegram BOT_TOKEN: ").strip()
 if not TOKEN:
@@ -75,7 +121,7 @@ OWNER_HELP = (
     "/renamekey <ключ> <имя> – переименовать ключ."
 )
 
-def gen_secret(n=20):
+def gen_secret(n: int = 20):
     return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
 
 # helper: check membership --------------------------------------------------
@@ -187,6 +233,7 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ])
     await update.message.reply_text(entry["status"], parse_mode="Markdown", reply_markup=kb)
 
+
 async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q or not q.data:
@@ -200,7 +247,6 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # ────────────── handle inline callback actions ──────────────
     if action == "status":
-        # refresh the stats and show the same keyboard again
         if not entry["status"]:
             return await q.edit_message_text("Нет данных от агента.")
         kb = InlineKeyboardMarkup([
@@ -245,12 +291,19 @@ async def pull(secret: str):
 # ────────────────────────── Bootstrap ──────────────────────────────────────
 
 def start_uvicorn():
-    uvicorn.run(app, host="0.0.0.0", port=API_PORT, log_level="info")
+    """Run uvicorn, with TLS if certs are available."""
+    kwargs = dict(host="0.0.0.0", port=API_PORT, log_level="info")
+    if CERT_FILE.exists() and KEY_FILE.exists():
+        kwargs.update(ssl_certfile=str(CERT_FILE), ssl_keyfile=str(KEY_FILE))
+        log.info("🔐 TLS enabled (%s, %s)", CERT_FILE, KEY_FILE)
+    else:
+        log.warning("⚠️  TLS disabled – running over plain HTTP.")
+    uvicorn.run(app, **kwargs)
 
 
 def main():
     threading.Thread(target=start_uvicorn, daemon=True).start()
-    log.info("🌐 FastAPI on %s", API_PORT)
+    log.info("🌐 FastAPI on %s%s", API_PORT, " (TLS)" if CERT_FILE.exists() else "")
 
     app_tg = ApplicationBuilder().token(TOKEN).build()
     app_tg.add_handler(CommandHandler(["start", "help"], cmd_start))
