@@ -291,6 +291,7 @@ def plot_metric(secret: str, metric: str, seconds: int) -> io.BytesIO | None:
     else:
         ys = [r[2] for r in rows]
         label = "RAM %"
+    plt.style.use('dark_background')
     fig, ax = plt.subplots(figsize=(6, 3))
     ax.plot(ts, ys, linewidth=1.5)
     ax.set_title(f"{label} за {timedelta(seconds=seconds)}")
