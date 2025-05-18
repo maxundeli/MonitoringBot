@@ -70,7 +70,7 @@ if CA_FILE:
 
 SCHEME = "https" if VERIFY_SSL is not False else "http"
 SERVER = f"{SCHEME}://{SERVER_IP}:{PORT}"
-INTERVAL = int(os.getenv("AGENT_INTERVAL", "30"))
+INTERVAL = int(os.getenv("AGENT_INTERVAL", "5"))
 
 log.info("Config → server %s verify=%s interval %ss", SERVER, VERIFY_SSL, INTERVAL)
 
