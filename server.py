@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import re
+import statistics
+import numpy as np
 import secrets
 import sqlite3
 import string
@@ -281,31 +283,36 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ───────────────────- Plot helpers ─────────────────────────────────────────
 def plot_metric(secret: str, metric: str, seconds: int) -> io.BytesIO | None:
     rows = fetch_metrics(secret, int(time.time()) - seconds)
-    log.info("Plot %s %s %s -> %d rows",
-             secret, metric, seconds, len(rows))
     if not rows:
         return None
+
     ts = [datetime.fromtimestamp(r[0]) for r in rows]
-    if metric == "cpu":
-        ys = [r[1] for r in rows]
-        label = "CPU %"
-    else:
-        ys = [r[2] for r in rows]
-        label = "RAM %"
-    plt.style.use('dark_background')
+    ys = [r[1] if metric == "cpu" else r[2] for r in rows]
+    label = "CPU %" if metric == "cpu" else "RAM %"
+
+    plt.style.use("dark_background")
     fig, ax = plt.subplots(figsize=(6, 3))
-    ax.plot(ts, ys, linewidth=1.5)
-    ax.set_title(f"{label} за {timedelta(seconds=seconds)}")
-    ax.set_xlabel("Время")
-    ax.set_ylabel("%")
-    ax.grid(True, linestyle="--", linewidth=0.3)
+
+    # ── вычисляем типовой шаг ─────────────────────────────
+    if len(ts) > 1:
+        diffs = [(b - a).total_seconds() for a, b in zip(ts, ts[1:])]
+        step = statistics.median(diffs)
+    else:
+        step = 30
+
+    # ── вставляем разрывы ────────────────────────────────
+    xs, ys_gap = [ts[0]], [ys[0]]
+    for prev_t, cur_t, y in zip(ts, ts[1:], ys[1:]):
+        if (cur_t - prev_t).total_seconds() > step * 2:
+            xs.append(cur_t)
+            ys_gap.append(np.nan)
+        xs.append(cur_t)
+        ys_gap.append(y)
+
+    ax.plot(xs, ys_gap, linewidth=1.5, label=label)
+    ax.legend()
     fig.autofmt_xdate()
-    buf = io.BytesIO()
-    plt.tight_layout()
-    fig.savefig(buf, format="png")
-    plt.close(fig)
-    buf.seek(0)
-    return buf
+
 
 # ─────────────────────- Callback handler ───────────────────────────────────
 async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
