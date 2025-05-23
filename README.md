@@ -96,8 +96,7 @@ MonitoringBot/
 └── README.md
 ```
 
-## License
-Released under the MIT License. See `LICENSE` for full terms.
+
 
 ---
 
