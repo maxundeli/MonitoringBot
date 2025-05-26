@@ -409,7 +409,13 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         seconds = int(parts[2])
         secret = parts[3]
 
-        buf = plot_metric(secret, metric, seconds)
+        if metric == "all":
+            buf = plot_all_metrics(secret, seconds)
+            caption = f"Все метрики за {timedelta(seconds=seconds)}"
+        else:
+            buf = plot_metric(secret, metric, seconds)
+            caption = f"{metric.upper()} за {timedelta(seconds=seconds)}"
+
         if not buf:
             return await q.edit_message_text("Данных за этот период нет.")
 
