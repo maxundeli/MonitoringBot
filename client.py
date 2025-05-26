@@ -103,7 +103,7 @@ def disk_bar(p: float, length=10) -> str:
 def gather_disks() -> List[str]:
     EXCL_FSTYPES        = {"tmpfs", "devtmpfs", "squashfs", "overlay", "aufs"}
     EXCL_DEV_PREFIXES   = ("/dev/loop",)                     # snap-loop’ы и пр.
-    EXCL_MOUNT_PREFIXES = ("/snap", "/var/lib/docker", "/var/snap")
+    EXCL_MOUNT_PREFIXES = ("/snap", "/var/lib/docker", "/var/snap", "/boot")
     MIN_SIZE_BYTES      = 1 << 30                           # 1 ГиБ
 
     lines, seen = [], set()
