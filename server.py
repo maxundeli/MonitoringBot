@@ -332,7 +332,7 @@ def plot_all_metrics(secret: str, seconds: int) -> io.BytesIO | None:
     vram  = [r[4] for r in rows if r[4] is not None]
 
     plt.style.use("dark_background")
-    fig, ax = plt.subplots(figsize=(6, 3))
+    fig, ax = plt.subplots(figsize=(12, 8))
 
     ax.plot(ts, cpu,  label="CPU %")
     ax.plot(ts, ram,  label="RAM %")
