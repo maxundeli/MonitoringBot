@@ -13,7 +13,7 @@ import time
 from datetime import timedelta
 from pathlib import Path
 from typing import List, Optional
-
+import shutil, subprocess, re
 import psutil
 import requests
 from requests import Session
@@ -114,20 +114,56 @@ def gather_disks() -> List[str]:
     return lines
 
 def gather_gpu() -> tuple[str, str] | None:
-    if pynvml is None:
-        return None
+    # ── 1) pynvml ─────────────────────────────
     try:
-        h = pynvml.nvmlDeviceGetHandleByIndex(0)  # первая карта
-        util = pynvml.nvmlDeviceGetUtilizationRates(h)
-        mem = pynvml.nvmlDeviceGetMemoryInfo(h)
-        gpu_line  = f"🎮 GPU: {util.gpu:.1f}%"
-        vram_line = (
-            f"🗄️ VRAM: {human_bytes(mem.used)} / {human_bytes(mem.total)} "
-            f"({mem.used / mem.total * 100:.1f}%)"
+        import pynvml
+        pynvml.nvmlInit()
+        h = pynvml.nvmlDeviceGetHandleByIndex(0)
+        util = pynvml.nvmlDeviceGetUtilizationRates(h).gpu          # %
+        mem  = pynvml.nvmlDeviceGetMemoryInfo(h)                    # bytes
+        return (
+            "━━━━━━━━━━━GPU━━━━━━━━━━━",
+            f"🎮 GPU: {util:.1f}%",
+            f"🗄️ VRAM: {mem.used/2**20:.0f} / {mem.total/2**20:.0f} MiB "
+            f"({mem.used/mem.total*100:.1f}%)"
         )
-        return gpu_line, vram_line
     except Exception:
-        return None
+        pass  # переходим к следующему способу
+
+    # ── 2)
+    if shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.check_output(
+                ["nvidia-smi",
+                 "--query-gpu=utilization.gpu,memory.used,memory.total",
+                 "--format=csv,noheader,nounits"],
+                text=True, timeout=2
+            ).strip()
+            util, used, total = map(float, re.split(r",\s*", out))
+            return (
+                "━━━━━━━━━━━GPU━━━━━━━━━━━",
+                f"🎮 GPU: {util:.1f}%",
+                f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB "
+                f"({used/total*100:.1f}%)"
+            )
+        except Exception:
+            pass
+
+    # ── 3) GPUtil
+    try:
+        import GPUtil
+        gpu = GPUtil.getGPUs()[0]
+        util = gpu.load * 100                           # 0-1 → %
+        used = gpu.memoryUsed
+        total = gpu.memoryTotal
+        return (
+            "━━━━━━━━━━━GPU━━━━━━━━━━━",
+            f"🎮 GPU: {util:.1f}%",
+            f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB "
+            f"({used/total*100:.1f}%)"
+        )
+    except Exception:
+        return None     # не удалось
 def gather_status() -> str:
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory()
@@ -141,15 +177,20 @@ def gather_status() -> str:
     )
     lines = [
         "💻 *PC stats*",
+        f"⏳ Uptime: {timedelta(seconds=int(uptime))}",
+        "━━━━━━━━━━━CPU━━━━━━━━━━━",
         f"🖥️ CPU: {cpu:.1f}%",
         f"🌡️ CPU Temp: {temp}",
+        "━━━━━━━━━━━RAM━━━━━━━━━━━",
         f"🧠 RAM: {human_bytes(mem.used)} / {human_bytes(mem.total)} ({mem.percent:.1f}%)",
         f"🧠 SWAP: {human_bytes(swap.used)} / {human_bytes(swap.total)} ({swap.percent:.1f}%)",
-    ] + gather_disks() + [f"⏳ Uptime: {timedelta(seconds=int(uptime))}"]
+        "━━━━━━━━━━━DISKS━━━━━━━━━━",
+    ] + gather_disks()
     gpu_lines = gather_gpu()
     if gpu_lines:
         lines.extend(gpu_lines)
     return "\n".join(lines)
+
 
 # ────────────────────────── network helpers ───────────────────────────────
 
