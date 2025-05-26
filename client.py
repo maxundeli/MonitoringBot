@@ -101,27 +101,39 @@ def disk_bar(p: float, length=10) -> str:
 
 
 def gather_disks() -> List[str]:
+    EXCL_FSTYPES        = {"tmpfs", "devtmpfs", "squashfs", "overlay", "aufs"}
+    EXCL_DEV_PREFIXES   = ("/dev/loop",)                     # snap-loop’ы и пр.
+    EXCL_MOUNT_PREFIXES = ("/snap", "/var/lib/docker", "/var/snap")
+    MIN_SIZE_BYTES      = 1 << 30                           # 1 ГиБ
+
     lines, seen = [], set()
-    lines.append(
-        "━━━━━━━━━━━DISKS━━━━━━━━━━")
+    lines.append("━━━━━━━━━━━DISKS━━━━━━━━━━")
+
     for part in psutil.disk_partitions(all=False):
-        if part.mountpoint in seen or part.fstype.lower() in {"tmpfs", "devtmpfs"}:
+        if (part.mountpoint in seen
+            or part.fstype.lower()            in EXCL_FSTYPES
+            or part.device.startswith(EXCL_DEV_PREFIXES)
+            or any(part.mountpoint.startswith(p) for p in EXCL_MOUNT_PREFIXES)):
             continue
         seen.add(part.mountpoint)
+
         try:
             u = psutil.disk_usage(part.mountpoint)
         except PermissionError:
             continue
-        if u.total == 0:
+
+        if u.total < MIN_SIZE_BYTES:
             continue
-        disk_string = f"💾 {part.mountpoint}: {disk_bar(u.percent)} {u.percent:.0f}% ({human_bytes(u.used)} / {human_bytes(u.total)})"
+
+        disk_string = (
+            f"💾 {part.mountpoint}: {disk_bar(u.percent)} "
+            f"{u.percent:.0f}% ({human_bytes(u.used)} / {human_bytes(u.total)})"
+        )
         if u.percent >= 90:
             disk_string += "❗"
-        lines.append(
-            disk_string
-        )
-    return lines
+        lines.append(disk_string)
 
+    return lines
 def gather_gpu() -> tuple[str, str, str, str] | None:
     # ── 1) pynvml ─────────────────────────────
     try:
