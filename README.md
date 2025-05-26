@@ -9,12 +9,12 @@ MonitoringBot consists of:
 | Component | Description |
 |-----------|-------------|
 | **server.py** | FastAPI application that receives, stores and visualises metrics. Integrates with a Telegram bot for user interaction. |
-| **client.py** | Cross‑platform agent that collects host metrics (CPU, RAM, disk, uptime) and periodically pushes them to the server. |
+| **client.py** | Cross‑platform agent that collects host metrics (CPU, RAM, GPU, VRAM, disk, uptime) and periodically pushes them to the server. |
 
 The server stores incoming data in SQLite and can generate on‑demand plots delivered via Telegram.
 
 ## Key Features
-* **Metric collection** – CPU load, memory usage, per‑disk utilisation and system uptime.
+* **Metric collection** – CPU and GPU load, memory usage, per‑disk utilisation and system uptime.
 * **Secure communication** – HTTPS with automatically generated self‑signed certificates (fallback to HTTP for testing).
 * **Telegram integration** – Inline commands for status queries and remote actions (reboot / shutdown).
 * **Data persistence** – Lightweight storage using SQLite; suitable for single‑instance deployments.
