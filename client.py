@@ -18,6 +18,11 @@ import psutil
 import requests
 from requests import Session
 from requests.exceptions import SSLError, ConnectionError
+try:
+    import pynvml
+    pynvml.nvmlInit()
+except Exception:
+    pynvml = None
 
 log = logging.getLogger("pc-agent")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -108,11 +113,26 @@ def gather_disks() -> List[str]:
         )
     return lines
 
-
+def gather_gpu() -> tuple[str, str] | None:
+    if pynvml is None:
+        return None
+    try:
+        h = pynvml.nvmlDeviceGetHandleByIndex(0)  # первая карта
+        util = pynvml.nvmlDeviceGetUtilizationRates(h)
+        mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+        gpu_line  = f"🎮 GPU: {util.gpu:.1f}%"
+        vram_line = (
+            f"🗄️ VRAM: {human_bytes(mem.used)} / {human_bytes(mem.total)} "
+            f"({mem.used / mem.total * 100:.1f}%)"
+        )
+        return gpu_line, vram_line
+    except Exception:
+        return None
 def gather_status() -> str:
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory()
     swap = psutil.swap_memory()
+
     uptime = time.time() - psutil.boot_time()
     temp = (
         f"{psutil.sensors_temperatures()['coretemp'][0].current:.1f} °C"
@@ -126,6 +146,9 @@ def gather_status() -> str:
         f"🧠 RAM: {human_bytes(mem.used)} / {human_bytes(mem.total)} ({mem.percent:.1f}%)",
         f"🧠 SWAP: {human_bytes(swap.used)} / {human_bytes(swap.total)} ({swap.percent:.1f}%)",
     ] + gather_disks() + [f"⏳ Uptime: {timedelta(seconds=int(uptime))}"]
+    gpu_lines = gather_gpu()
+    if gpu_lines:
+        lines.extend(gpu_lines)
     return "\n".join(lines)
 
 # ────────────────────────── network helpers ───────────────────────────────

@@ -44,6 +44,8 @@ METRIC_DB = Path("metrics.sqlite")
 API_PORT = int(os.getenv("PORT", "8000"))
 SUM_CPU = defaultdict(float)
 SUM_RAM = defaultdict(float)
+SUM_GPU = defaultdict(float)
+SUM_VRAM = defaultdict(float)
 COUNTERS = defaultdict(int)
 
 CERT_FILE = Path(os.getenv("SSL_CERT", "cert.pem"))
@@ -55,6 +57,8 @@ matplotlib.use("Agg")
 # ────────────────────────── helpers ────────────────────────────────────────
 CPU_RE = re.compile(r"CPU:\s*([\d.]+)%")
 RAM_RE = re.compile(r"RAM:.*\(([\d.]+)%\)")
+GPU_RE  = re.compile(r"GPU:\s*([\d.]+)%")
+VRAM_RE = re.compile(r"VRAM:.*\(([\d.]+)%\)")
 COUNTERS: defaultdict[str, int] = defaultdict(int)
 
 def _load_dotenv() -> None:
@@ -118,10 +122,12 @@ def _init_metric_db() -> sqlite3.Connection:
     con = sqlite3.connect(METRIC_DB, check_same_thread=False)
     con.execute(
         """CREATE TABLE IF NOT EXISTS metrics(
-                secret TEXT,
-                ts INTEGER,
-                cpu REAL,
-                ram REAL
+               secret TEXT,
+               ts     INTEGER,
+               cpu    REAL,
+               ram    REAL,
+               gpu    REAL,
+               vram   REAL
         )"""
     )
     con.execute(
@@ -131,17 +137,16 @@ def _init_metric_db() -> sqlite3.Connection:
 
 sql = _init_metric_db()
 
-def record_metric(secret: str, cpu: float, ram: float):
-    log.debug("REC %s cpu=%s ram=%s", secret, cpu, ram)
+def record_metric(secret: str, cpu: float, ram: float,
+                  gpu: float | None, vram: float | None):
     sql.execute(
-        "INSERT INTO metrics(secret, ts, cpu, ram) VALUES(?,?,?,?)",
-        (secret, int(time.time()), cpu, ram),
+        "INSERT INTO metrics(secret, ts, cpu, ram, gpu, vram) VALUES(?,?,?,?,?,?)",
+        (secret, int(time.time()), cpu, ram, gpu, vram),
     )
-    sql.commit()
 
 def fetch_metrics(secret: str, since: int) -> List[tuple[int, float]]:
     rows = sql.execute(
-        "SELECT ts, cpu, ram FROM metrics WHERE secret=? AND ts>=? ORDER BY ts ASC",
+        "SELECT ts, cpu, ram, gpu, vram FROM metrics WHERE secret=? AND ts>=? ORDER BY ts ASC",
         (secret, since),
     ).fetchall()
     return rows
@@ -182,6 +187,10 @@ def status_keyboard(secret: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("📊 CPU", callback_data=f"graph:cpu:{secret}"),
                 InlineKeyboardButton("📈 RAM", callback_data=f"graph:ram:{secret}"),
+            ],
+            [
+                InlineKeyboardButton("🎮 GPU", callback_data=f"graph:gpu:{secret}"),
+                InlineKeyboardButton("🗄️ VRAM", callback_data=f"graph:vram:{secret}"),
             ],
             [InlineKeyboardButton("🔃 Обновить", callback_data=f"status:{secret}")],
             [
@@ -289,9 +298,13 @@ def plot_metric(secret: str, metric: str, seconds: int) -> io.BytesIO | None:
     if metric == "cpu":
         ys = [r[1] for r in rows]
         label = "CPU %"
-    else:
+    elif metric == "ram":
         ys = [r[2] for r in rows]
         label = "RAM %"
+    elif metric == "gpu":
+        ys, label = [r[3] for r in rows], "GPU %"
+    elif metric == "vram":
+        ys, label = [r[4] for r in rows], "VRAM %"
     plt.style.use('dark_background')
     fig, ax = plt.subplots(figsize=(6, 3))
     ax.plot(ts, ys, linewidth=1.5)
@@ -380,33 +393,54 @@ async def push(secret: str, payload: StatusPayload):
     if secret not in db["secrets"]:
         raise HTTPException(404)
 
+    # Сохраняем последний статус для /status в Telegram-боте
     db["secrets"][secret]["status"] = payload.text
     save_db(db)
 
-    cpu_m = CPU_RE.search(payload.text)
-    ram_m = RAM_RE.search(payload.text)
+    # ───── парсинг чисел ─────
+    cpu_m  = CPU_RE.search(payload.text)
+    ram_m  = RAM_RE.search(payload.text)
+    gpu_m  = GPU_RE.search(payload.text)
+    vram_m = VRAM_RE.search(payload.text)
+
+    # CPU и RAM считаем обязательными: если их нет — просто выходим
     if not (cpu_m and ram_m):
         return {"ok": True}
 
     try:
-        cpu_val = float(cpu_m.group(1))
-        ram_val = float(ram_m.group(1))
+        cpu_val  = float(cpu_m.group(1))
+        ram_val  = float(ram_m.group(1))
+        gpu_val  = float(gpu_m.group(1)) if gpu_m else None
+        vram_val = float(vram_m.group(1)) if vram_m else None
     except ValueError:
+        # Невалидные числа — игнорируем этот пуш
         return {"ok": True}
 
-
-    SUM_CPU[secret] += cpu_val
-    SUM_RAM[secret] += ram_val
+    # ───── аккумуляторы ─────
+    SUM_CPU[secret]  += cpu_val
+    SUM_RAM[secret]  += ram_val
+    SUM_GPU[secret]  += gpu_val  if gpu_val  is not None else 0.0
+    SUM_VRAM[secret] += vram_val if vram_val is not None else 0.0
     COUNTERS[secret] += 1
 
+    # Каждые 6 пушей (примерно 1 минута при шаге 10 с) пишем усреднённое
     if COUNTERS[secret] >= 6:
-        avg_cpu = SUM_CPU[secret] / COUNTERS[secret]
-        avg_ram = SUM_RAM[secret] / COUNTERS[secret]
+        avg_cpu  = SUM_CPU[secret]  / COUNTERS[secret]
+        avg_ram  = SUM_RAM[secret]  / COUNTERS[secret]
+        avg_gpu  = (
+            SUM_GPU[secret] / COUNTERS[secret] if gpu_m else None
+        )
+        avg_vram = (
+            SUM_VRAM[secret] / COUNTERS[secret] if vram_m else None
+        )
 
-        record_metric(secret, avg_cpu, avg_ram)
+        record_metric(secret, avg_cpu, avg_ram, avg_gpu, avg_vram)
 
-        SUM_CPU[secret] = 0.0
-        SUM_RAM[secret] = 0.0
+        # сбрасываем счётчики
+        SUM_CPU[secret]  = 0.0
+        SUM_RAM[secret]  = 0.0
+        SUM_GPU[secret]  = 0.0
+        SUM_VRAM[secret] = 0.0
         COUNTERS[secret] = 0
 
     return {"ok": True}
