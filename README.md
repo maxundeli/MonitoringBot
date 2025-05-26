@@ -1,7 +1,7 @@
 # MonitoringBot
 
 A lightweight client–server system for remote monitoring of basic host metrics.  
-This project was developed as part of a university coursework assignment and is now maintained at **<https://github.com/loshara131313/MonitoringBot>**.
+This project was developed as part of a university coursework assignment and is now maintained at **<https://github.com/maxundeli/MonitoringBot>**.
 
 ## Overview
 MonitoringBot consists of:
@@ -96,8 +96,7 @@ MonitoringBot/
 └── README.md
 ```
 
-## License
-Released under the MIT License. See `LICENSE` for full terms.
+
 
 ---
 
