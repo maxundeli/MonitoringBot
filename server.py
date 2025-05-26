@@ -184,20 +184,18 @@ def is_owner(entry: Dict[str, Any], user_id: int) -> bool:
 def status_keyboard(secret: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("📊 Все", callback_data=f"graph:all:{secret}")],
             [
-                InlineKeyboardButton("📊 CPU", callback_data=f"graph:cpu:{secret}"),
-                InlineKeyboardButton("📈 RAM", callback_data=f"graph:ram:{secret}"),
+                InlineKeyboardButton("📊 CPU",  callback_data=f"graph:cpu:{secret}"),
+                InlineKeyboardButton("📈 RAM",  callback_data=f"graph:ram:{secret}"),
             ],
             [
-                InlineKeyboardButton("🎮 GPU", callback_data=f"graph:gpu:{secret}"),
+                InlineKeyboardButton("🎮 GPU",  callback_data=f"graph:gpu:{secret}"),
                 InlineKeyboardButton("🗄️ VRAM", callback_data=f"graph:vram:{secret}"),
-            ],
-            [
-                InlineKeyboardButton("📊 Все", callback_data=f"graph:all:{secret}"),
             ],
             [InlineKeyboardButton("🔃 Обновить", callback_data=f"status:{secret}")],
             [
-                InlineKeyboardButton("🔄 Reboot", callback_data=f"reboot:{secret}"),
+                InlineKeyboardButton("🔄 Reboot",   callback_data=f"reboot:{secret}"),
                 InlineKeyboardButton("⏻ Shutdown", callback_data=f"shutdown:{secret}"),
             ],
         ]
@@ -322,35 +320,33 @@ def plot_metric(secret: str, metric: str, seconds: int) -> io.BytesIO | None:
     plt.close(fig)
     buf.seek(0)
     return buf
-
 def plot_all_metrics(secret: str, seconds: int) -> io.BytesIO | None:
-    since = int(time.time()) - seconds
-    rows = fetch_metrics(secret, since)
-    log.info("Plot ALL metrics: %s — %d s → %d rows", secret, seconds, len(rows))
-
+    rows = fetch_metrics(secret, int(time.time()) - seconds)
     if not rows:
         return None
 
-    ts   = [datetime.fromtimestamp(r[0]) for r in rows]
-    cpu  = [r[1] for r in rows]
-    ram  = [r[2] for r in rows]
-    gpu  = [r[3] if r[3] is not None else float("nan") for r in rows]
-    vram = [r[4] if r[4] is not None else float("nan") for r in rows]
+    ts    = [datetime.fromtimestamp(r[0]) for r in rows]
+    cpu   = [r[1] for r in rows]
+    ram   = [r[2] for r in rows]
+    gpu   = [r[3] for r in rows if r[3] is not None]
+    vram  = [r[4] for r in rows if r[4] is not None]
 
     plt.style.use("dark_background")
     fig, ax = plt.subplots(figsize=(6, 3))
 
-    ax.plot(ts, cpu,  linewidth=1.5, label="CPU %")
-    ax.plot(ts, ram,  linewidth=1.5, label="RAM %")
-    ax.plot(ts, gpu,  linewidth=1.5, label="GPU %")
-    ax.plot(ts, vram, linewidth=1.5, label="VRAM %")
+    ax.plot(ts, cpu,  label="CPU %")
+    ax.plot(ts, ram,  label="RAM %")
+    if gpu:
+        ax.plot(ts, [r[3] for r in rows],  label="GPU %")
+    if vram:
+        ax.plot(ts, [r[4] for r in rows],  label="VRAM %")
 
     ax.set_ylim(0, 100)
     ax.set_title(f"Все метрики за {timedelta(seconds=seconds)}")
     ax.set_xlabel("Время")
     ax.set_ylabel("%")
     ax.grid(True, linestyle="--", linewidth=0.3)
-    ax.legend(ncol=2, fontsize="small")
+    ax.legend(loc="upper left", fontsize="small")
     fig.autofmt_xdate()
 
     buf = io.BytesIO()
@@ -359,6 +355,7 @@ def plot_all_metrics(secret: str, seconds: int) -> io.BytesIO | None:
     plt.close(fig)
     buf.seek(0)
     return buf
+
 # ─────────────────────- Callback handler ───────────────────────────────────
 async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
