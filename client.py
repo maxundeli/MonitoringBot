@@ -107,7 +107,7 @@ def gather_disks() -> List[str]:
     MIN_SIZE_BYTES      = 1 << 30                           # 1 ГиБ
 
     lines, seen = [], set()
-    lines.append("━━━━━━━━━━━DISKS━━━━━━━━━━")
+    lines.append("*━━━━━━━━━━━DISKS━━━━━━━━━━*")
 
     for part in psutil.disk_partitions(all=False):
         if (part.mountpoint in seen
@@ -145,7 +145,7 @@ def gather_gpu() -> tuple[str, str, str, str] | None:
         temp = pynvml.nvmlDeviceGetTemperature(
             h, pynvml.NVML_TEMPERATURE_GPU)
         return (
-            "━━━━━━━━━━━GPU━━━━━━━━━━━",
+            "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
             f"🎮 GPU: {util:.1f}%",
             f"🗄️ VRAM: {mem.used/2**20:.0f} / {mem.total/2**20:.0f} MiB "
             f"({mem.used/mem.total*100:.1f}%)",
@@ -166,7 +166,7 @@ def gather_gpu() -> tuple[str, str, str, str] | None:
                                                           ).strip()
                                                           ))
             return (
-                "━━━━━━━━━━━GPU━━━━━━━━━━━",
+                "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
                 f"🎮 GPU: {util:.1f}%",
                 f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB "
                 f"({used/total*100:.1f}%)",
@@ -184,7 +184,7 @@ def gather_gpu() -> tuple[str, str, str, str] | None:
         total = gpu.memoryTotal
         temp = gpu.temperature
         return (
-            "━━━━━━━━━━━GPU━━━━━━━━━━━",
+            "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
             f"🎮 GPU: {util:.1f}%",
             f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB "
             f"({used/total*100:.1f}%)",
@@ -228,10 +228,10 @@ def gather_status() -> str:
     lines = [
         "💻 *PC stats*",
         f"⏳ Uptime: {timedelta(seconds=int(uptime))}",
-        "━━━━━━━━━━━CPU━━━━━━━━━━━",
+        "*━━━━━━━━━━━CPU━━━━━━━━━━━*",
         f"🖥️ CPU: {cpu:.1f}%",
         f"🌡️ CPU Temp: {temp}",
-        "━━━━━━━━━━━RAM━━━━━━━━━━━",
+        "*━━━━━━━━━━━RAM━━━━━━━━━━━*",
         f"🧠 RAM: {human_bytes(mem.used)} / {human_bytes(mem.total)} ({mem.percent:.1f}%)",
         f"🧠 SWAP: {human_bytes(swap.used)} / {human_bytes(swap.total)} ({swap.percent:.1f}%)",
 
