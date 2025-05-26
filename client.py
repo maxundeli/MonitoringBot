@@ -6,6 +6,10 @@ from __future__ import annotations
 import logging
 import os
 import platform
+try:
+    import wmi
+except ImportError:
+    wmi = None
 import re
 import subprocess
 import sys
@@ -93,11 +97,13 @@ def human_bytes(num: float) -> str:
 
 def disk_bar(p: float, length=10) -> str:
     filled = int(round(p * length / 100))
-    return "■" * filled + "□" * (length - filled)
+    return "█" * filled + "░" * (length - filled)
 
 
 def gather_disks() -> List[str]:
     lines, seen = [], set()
+    lines.append(
+        "━━━━━━━━━━━DISKS━━━━━━━━━━")
     for part in psutil.disk_partitions(all=False):
         if part.mountpoint in seen or part.fstype.lower() in {"tmpfs", "devtmpfs"}:
             continue
@@ -108,12 +114,15 @@ def gather_disks() -> List[str]:
             continue
         if u.total == 0:
             continue
+        disk_string = f"💾 {part.mountpoint}: {disk_bar(u.percent)} {u.percent:.0f}% ({human_bytes(u.used)} / {human_bytes(u.total)})"
+        if u.percent >= 90:
+            disk_string += "❗"
         lines.append(
-            f"💾 {part.mountpoint}: {disk_bar(u.percent)} {u.percent:.0f}% ({human_bytes(u.used)} / {human_bytes(u.total)})"
+            disk_string
         )
     return lines
 
-def gather_gpu() -> tuple[str, str] | None:
+def gather_gpu() -> tuple[str, str, str, str] | None:
     # ── 1) pynvml ─────────────────────────────
     try:
         import pynvml
@@ -121,11 +130,14 @@ def gather_gpu() -> tuple[str, str] | None:
         h = pynvml.nvmlDeviceGetHandleByIndex(0)
         util = pynvml.nvmlDeviceGetUtilizationRates(h).gpu          # %
         mem  = pynvml.nvmlDeviceGetMemoryInfo(h)                    # bytes
+        temp = pynvml.nvmlDeviceGetTemperature(
+            h, pynvml.NVML_TEMPERATURE_GPU)
         return (
             "━━━━━━━━━━━GPU━━━━━━━━━━━",
             f"🎮 GPU: {util:.1f}%",
             f"🗄️ VRAM: {mem.used/2**20:.0f} / {mem.total/2**20:.0f} MiB "
-            f"({mem.used/mem.total*100:.1f}%)"
+            f"({mem.used/mem.total*100:.1f}%)",
+            f"🌡️ GPU Temp: {temp} °C"
         )
     except Exception:
         pass  # переходим к следующему способу
@@ -133,18 +145,20 @@ def gather_gpu() -> tuple[str, str] | None:
     # ── 2)
     if shutil.which("nvidia-smi"):
         try:
-            out = subprocess.check_output(
-                ["nvidia-smi",
-                 "--query-gpu=utilization.gpu,memory.used,memory.total",
-                 "--format=csv,noheader,nounits"],
-                text=True, timeout=2
-            ).strip()
-            util, used, total = map(float, re.split(r",\s*", out))
+            util, used, total, temp = map(float, re.split(r",\s*",
+                                                          subprocess.check_output(
+                                                              ["nvidia-smi",
+                                                               "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
+                                                               "--format=csv,noheader,nounits"],
+                                                              text=True, timeout=2
+                                                          ).strip()
+                                                          ))
             return (
                 "━━━━━━━━━━━GPU━━━━━━━━━━━",
                 f"🎮 GPU: {util:.1f}%",
                 f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB "
-                f"({used/total*100:.1f}%)"
+                f"({used/total*100:.1f}%)",
+                f"🌡️ GPU Temp: {temp} °C"
             )
         except Exception:
             pass
@@ -156,25 +170,49 @@ def gather_gpu() -> tuple[str, str] | None:
         util = gpu.load * 100                           # 0-1 → %
         used = gpu.memoryUsed
         total = gpu.memoryTotal
+        temp = gpu.temperature
         return (
             "━━━━━━━━━━━GPU━━━━━━━━━━━",
             f"🎮 GPU: {util:.1f}%",
             f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB "
-            f"({used/total*100:.1f}%)"
+            f"({used/total*100:.1f}%)",
+            f"🌡️ GPU Temp: {temp} °C"
         )
     except Exception:
         return None     # не удалось
+def get_cpu_temp() -> str | None:
+    # ── 1) стандартный psutil ─────────────────────────────
+    try:
+        temps = psutil.sensors_temperatures()
+        if temps:
+            for name in ("coretemp", "k10temp", "cpu_thermal"):
+                if name in temps and temps[name]:
+                    return f"{temps[name][0].current:.1f} °C"
+    except Exception:
+        pass
+
+    # ── 2) Windows: Open/Libre Hardware Monitor через WMI ─
+    if platform.system() == "Windows" and wmi:
+        for namespace in ("root\\OpenHardwareMonitor",
+                          "root\\LibreHardwareMonitor"):
+            try:
+                c = wmi.WMI(namespace=namespace)
+                sensors = c.Sensor()  # все датчики
+                for s in sensors:
+                    if s.SensorType == u"Temperature" and "CPU" in s.Name:
+                        return f"{s.Value:.1f} °C"
+            except Exception:
+                continue
+
+    return None
 def gather_status() -> str:
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory()
     swap = psutil.swap_memory()
+    temp_val = get_cpu_temp()
+    temp = temp_val if temp_val is not None else "N/A"
 
     uptime = time.time() - psutil.boot_time()
-    temp = (
-        f"{psutil.sensors_temperatures()['coretemp'][0].current:.1f} °C"
-        if hasattr(psutil, "sensors_temperatures") and psutil.sensors_temperatures()
-        else "N/A"
-    )
     lines = [
         "💻 *PC stats*",
         f"⏳ Uptime: {timedelta(seconds=int(uptime))}",
@@ -184,14 +222,14 @@ def gather_status() -> str:
         "━━━━━━━━━━━RAM━━━━━━━━━━━",
         f"🧠 RAM: {human_bytes(mem.used)} / {human_bytes(mem.total)} ({mem.percent:.1f}%)",
         f"🧠 SWAP: {human_bytes(swap.used)} / {human_bytes(swap.total)} ({swap.percent:.1f}%)",
-        "━━━━━━━━━━━DISKS━━━━━━━━━━",
-    ] + gather_disks()
+
+    ]
     gpu_lines = gather_gpu()
+    disk_lines = gather_disks()
     if gpu_lines:
         lines.extend(gpu_lines)
+    lines.extend(disk_lines)
     return "\n".join(lines)
-
-
 # ────────────────────────── network helpers ───────────────────────────────
 
 session = Session()
