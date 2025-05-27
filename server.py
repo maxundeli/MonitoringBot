@@ -10,13 +10,16 @@ import re
 import secrets
 import sqlite3
 import string
+from telegram import InputFile
 import subprocess
 import sys
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta
 from pathlib import Path
+import numpy as np
+from statistics import median
+from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 import matplotlib
@@ -289,57 +292,95 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 # ───────────────────- Plot helpers ─────────────────────────────────────────
-def plot_metric(secret: str, metric: str, seconds: int) -> io.BytesIO | None:
+def _find_gaps(ts, factor: float = 2.0):
+    if len(ts) < 2:
+        return [(0, len(ts) - 1)], [], 0
+
+    intervals = [(ts[i] - ts[i - 1]).total_seconds() for i in range(1, len(ts))]
+    med = median(intervals) if intervals else 0
+    if med <= 0:
+        med = max(intervals) if intervals else 60  # fallback 60 s
+    thr = med * factor
+
+    segments, gaps = [], []
+    start = 0
+    for i, dt in enumerate(intervals, start=1):
+        if dt > thr:
+            segments.append((start, i - 1))
+            gaps.append((ts[i - 1], ts[i]))
+            start = i
+    segments.append((start, len(ts) - 1))
+    return segments, gaps, thr
+
+
+def _plot_segments(ax, ts, ys, segments, *args, **kwargs):
+    """Plot *ys* against *ts* for every (start, end) in *segments*."""
+    for s, e in segments:
+        ax.plot(ts[s : e + 1], ys[s : e + 1], *args, **kwargs)
+def plot_metric(secret: str, metric: str, seconds: int):
     rows = fetch_metrics(secret, int(time.time()) - seconds)
-    log.info("Plot %s %s %s -> %d rows",
-             secret, metric, seconds, len(rows))
     if not rows:
         return None
+
     ts = [datetime.fromtimestamp(r[0]) for r in rows]
-    if metric == "cpu":
-        ys = [r[1] for r in rows]
-        label = "CPU %"
-    elif metric == "ram":
-        ys = [r[2] for r in rows]
-        label = "RAM %"
-    elif metric == "gpu":
-        ys, label = [r[3] for r in rows], "GPU %"
-    elif metric == "vram":
-        ys, label = [r[4] for r in rows], "VRAM %"
-    plt.style.use('dark_background')
+
+    idx_map = {
+        "cpu": (1, "CPU %"),
+        "ram": (2, "RAM %"),
+        "gpu": (3, "GPU %"),
+        "vram": (4, "VRAM %"),
+    }
+    col_idx, label = idx_map[metric]
+    ys = [np.nan if rows[i][col_idx] is None else rows[i][col_idx] for i in range(len(rows))]
+
+    segments, gaps, _ = _find_gaps(ts)
+
+    plt.style.use("dark_background")
     fig, ax = plt.subplots(figsize=(6, 3))
-    ax.plot(ts, ys, linewidth=1.5)
+
+    _plot_segments(ax, ts, ys, segments, linewidth=1.5)
+
+    for g0, g1 in gaps:
+        ax.axvspan(g0, g1, facecolor="none", hatch="//", edgecolor="white", alpha=0.3, linewidth=0)
+
     ax.set_title(f"{label} за {timedelta(seconds=seconds)}")
     ax.set_xlabel("Время")
     ax.set_ylabel("%")
+    ax.set_ylim(0, 100)
     ax.grid(True, linestyle="--", linewidth=0.3)
     fig.autofmt_xdate()
+
     buf = io.BytesIO()
     plt.tight_layout()
     fig.savefig(buf, format="png")
     plt.close(fig)
     buf.seek(0)
     return buf
-def plot_all_metrics(secret: str, seconds: int) -> io.BytesIO | None:
+def plot_all_metrics(secret: str, seconds: int):
     rows = fetch_metrics(secret, int(time.time()) - seconds)
     if not rows:
         return None
 
-    ts    = [datetime.fromtimestamp(r[0]) for r in rows]
-    cpu   = [r[1] for r in rows]
-    ram   = [r[2] for r in rows]
-    gpu   = [r[3] for r in rows if r[3] is not None]
-    vram  = [r[4] for r in rows if r[4] is not None]
+    ts = [datetime.fromtimestamp(r[0]) for r in rows]
+    segments, gaps, _ = _find_gaps(ts)
+
+    cpu = [r[1] for r in rows]
+    ram = [r[2] for r in rows]
+    gpu = [np.nan if r[3] is None else r[3] for r in rows]
+    vram = [np.nan if r[4] is None else r[4] for r in rows]
 
     plt.style.use("dark_background")
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    ax.plot(ts, cpu,  label="CPU %")
-    ax.plot(ts, ram,  label="RAM %")
-    if gpu:
-        ax.plot(ts, [r[3] for r in rows],  label="GPU %")
-    if vram:
-        ax.plot(ts, [r[4] for r in rows],  label="VRAM %")
+    for ys, lab in ((cpu, "CPU %"), (ram, "RAM %")):
+        _plot_segments(ax, ts, ys, segments, label=lab, linewidth=1.2)
+    if not all(np.isnan(g) for g in gpu):
+        _plot_segments(ax, ts, gpu, segments, label="GPU %", linewidth=1.2)
+    if not all(np.isnan(v) for v in vram):
+        _plot_segments(ax, ts, vram, segments, label="VRAM %", linewidth=1.2)
+
+    for g0, g1 in gaps:
+        ax.axvspan(g0, g1, facecolor="none", hatch="//", edgecolor="white", alpha=0.3, linewidth=0)
 
     ax.set_ylim(0, 100)
     ax.set_title(f"Все метрики за {timedelta(seconds=seconds)}")
@@ -399,6 +440,7 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         InlineKeyboardButton("10 мин", callback_data=f"graph:{metric}:600:{secret}"),
                         InlineKeyboardButton("1 час", callback_data=f"graph:{metric}:3600:{secret}"),
                         InlineKeyboardButton("24 ч", callback_data=f"graph:{metric}:86400:{secret}"),
+                        InlineKeyboardButton("7 д", callback_data=f"graph:{metric}:604800:{secret}"),
                     ],
                     [InlineKeyboardButton("◀️ Назад", callback_data=f"status:{secret}")],
                 ]
@@ -420,7 +462,19 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await q.edit_message_text("Данных за этот период нет.")
 
         caption = f"{metric.upper()} за {timedelta(seconds=seconds)}"
-        await ctx.bot.send_photo(chat_id=q.message.chat_id, photo=buf, caption=caption)
+        if seconds >= 86400:
+            doc = InputFile(buf, filename=f"{metric}_{seconds}.png")
+            await ctx.bot.send_document(
+                chat_id=q.message.chat_id,
+                document=doc,
+                caption=caption,
+            )
+        else:
+            await ctx.bot.send_photo(
+                chat_id=q.message.chat_id,
+                photo=buf,
+                caption=caption,
+            )
         return
 
 # ────────────────────────── FastAPI for agents ─────────────────────────────
