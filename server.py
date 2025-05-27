@@ -370,7 +370,11 @@ def plot_all_metrics(secret: str, seconds: int):
     vram = [np.nan if r[4] is None else r[4] for r in rows]
 
     plt.style.use("dark_background")
-    fig, ax = plt.subplots(figsize=(12, 6))
+    if seconds>= 86400:
+        fig, ax = plt.subplots(figsize=(24, 12))
+    else:
+        fig, ax = plt.subplots(figsize=(12, 6))
+
 
     for ys, lab in ((cpu, "CPU %"), (ram, "RAM %")):
         _plot_segments(ax, ts, ys, segments, label=lab, linewidth=1.2)
