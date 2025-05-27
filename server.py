@@ -317,6 +317,21 @@ def _plot_segments(ax, ts, ys, segments, *args, **kwargs):
     """Plot *ys* against *ts* for every (start, end) in *segments*."""
     for s, e in segments:
         ax.plot(ts[s : e + 1], ys[s : e + 1], *args, **kwargs)
+def _make_figure(seconds: int):
+    long_span = seconds >= 86_400  # ≥ 1 day
+    dpi = 300 if long_span else 150
+    fig, ax = plt.subplots(figsize=(12, 6), dpi=dpi)
+
+    base = 14 if long_span else 9
+    plt.rcParams.update({
+        "font.size": base,
+        "axes.titlesize": base + 4,
+        "axes.labelsize": base + 2,
+        "xtick.labelsize": base - 1,
+        "ytick.labelsize": base - 1,
+        "legend.fontsize": base - 1,
+    })
+    return fig, ax
 def plot_metric(secret: str, metric: str, seconds: int):
     rows = fetch_metrics(secret, int(time.time()) - seconds)
     if not rows:
@@ -336,7 +351,7 @@ def plot_metric(secret: str, metric: str, seconds: int):
     segments, gaps, _ = _find_gaps(ts)
 
     plt.style.use("dark_background")
-    fig, ax = plt.subplots(figsize=(6, 3))
+    fig, ax = _make_figure(seconds)
 
     _plot_segments(ax, ts, ys, segments, linewidth=1.5)
 
@@ -370,10 +385,8 @@ def plot_all_metrics(secret: str, seconds: int):
     vram = [np.nan if r[4] is None else r[4] for r in rows]
 
     plt.style.use("dark_background")
-    if seconds>= 86400:
-        fig, ax = plt.subplots(figsize=(24, 12))
-    else:
-        fig, ax = plt.subplots(figsize=(12, 6))
+
+    fig, ax = _make_figure(seconds)
 
 
     for ys, lab in ((cpu, "CPU %"), (ram, "RAM %")):
@@ -396,7 +409,7 @@ def plot_all_metrics(secret: str, seconds: int):
 
     buf = io.BytesIO()
     plt.tight_layout()
-    fig.savefig(buf, format="png")
+    fig.savefig(buf, dpi=DPI, format="png")
     plt.close(fig)
     buf.seek(0)
     return buf
