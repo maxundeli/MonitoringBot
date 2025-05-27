@@ -367,7 +367,7 @@ def plot_metric(secret: str, metric: str, seconds: int):
 
     buf = io.BytesIO()
     plt.tight_layout()
-    fig.savefig(buf, format="png")
+    fig.savefig(buf, dpi=fig.dpi, format="png")
     plt.close(fig)
     buf.seek(0)
     return buf
@@ -409,7 +409,7 @@ def plot_all_metrics(secret: str, seconds: int):
 
     buf = io.BytesIO()
     plt.tight_layout()
-    fig.savefig(buf, dpi=DPI, format="png")
+    fig.savefig(buf, dpi=fig.dpi, format="png")
     plt.close(fig)
     buf.seek(0)
     return buf
