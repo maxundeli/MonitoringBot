@@ -322,7 +322,7 @@ def _make_figure(seconds: int):
     dpi = 300 if long_span else 150
     fig, ax = plt.subplots(figsize=(12, 6), dpi=dpi)
 
-    base = 14 if long_span else 9
+    base = 9
     plt.rcParams.update({
         "font.size": base,
         "axes.titlesize": base + 4,
