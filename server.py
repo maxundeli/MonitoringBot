@@ -122,7 +122,7 @@ log = logging.getLogger("remote-bot")
 
 # ───────────────────── SQLite helpers ──────────────────────────────────────
 def _init_metric_db() -> sqlite3.Connection:
-    con = sqlite3.connect(METRIC_DB, check_same_thread=False)
+    con = sqlite3.connect(METRIC_DB, check_same_thread=False, isolation_level=None)
     con.execute(
         """CREATE TABLE IF NOT EXISTS metrics(
                secret TEXT,
@@ -314,9 +314,18 @@ def _find_gaps(ts, factor: float = 2.0):
 
 
 def _plot_segments(ax, ts, ys, segments, *args, **kwargs):
-    """Plot *ys* against *ts* for every (start, end) in *segments*."""
+    first = True
+    col = None
     for s, e in segments:
-        ax.plot(ts[s : e + 1], ys[s : e + 1], *args, **kwargs)
+        if first:
+            line, = ax.plot(ts[s:e+1], ys[s:e+1], *args, **kwargs)
+            col = line.get_color()
+            first = False
+        else:
+            kw = dict(kwargs)
+            kw.pop("label", None)
+            kw["color"] = col
+            ax.plot(ts[s:e+1], ys[s:e+1], *args, **kw)
 def _make_figure(seconds: int):
     long_span = seconds >= 86_400  # ≥ 1 day
     dpi = 300 if long_span else 150
