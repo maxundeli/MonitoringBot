@@ -50,7 +50,37 @@ def prompt_ip() -> str:
             return ip
         print("❌ Invalid IPv4, try again (e.g. 192.168.1.42)")
 
+# ──────────────────── fingerprint pinning ────────────────────────
+import hashlib, json, ssl, pathlib
+FP_FILE = pathlib.Path.home() / ".bot_fingerprint.json"
+
+def _cert_fp(cert_bin: bytes) -> str:
+    return hashlib.sha256(cert_bin).hexdigest()
+
+def _load_fp() -> str | None:
+    if FP_FILE.exists():
+        return json.loads(FP_FILE.read_text()).get("fp")
+
+def _save_fp(fp: str):
+    FP_FILE.write_text(json.dumps({"fp": fp}))
+
+def _ctx_with_pinning(pinned: str | None) -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    if pinned:
+        # проверяем, что отпечаток совпадает
+        def _verify_cb(conn, cert, errno, depth, ok):
+            return ok and _cert_fp(cert.as_binary()) == pinned
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.set_verify(ssl.CERT_REQUIRED, _verify_cb)
+    else:
+        # первый запуск: временно без проверки
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
 # ────────────────────────── CONFIG values ──────────────────────────────────
+
 SECRET = os.getenv("AGENT_SECRET") or input("Enter AGENT_SECRET: ").strip()
 if not SECRET:
     print("AGENT_SECRET required"); sys.exit(1)
@@ -77,7 +107,7 @@ CA_FILE = os.getenv("AGENT_CA_FILE")
 if CA_FILE:
     VERIFY_SSL = CA_FILE  # requests accepts str path
 
-SCHEME = "https" if VERIFY_SSL is not False else "http"
+SCHEME = "https"
 SERVER = f"{SCHEME}://{SERVER_IP}:{PORT}"
 INTERVAL = int(os.getenv("AGENT_INTERVAL", "5"))
 
@@ -242,23 +272,58 @@ def gather_status() -> str:
         lines.extend(gpu_lines)
     lines.extend(disk_lines)
     return "\n".join(lines)
-# ────────────────────────── network helpers ───────────────────────────────
+# ────── network layer: TLS TOFU + fingerprint pinning ────────────
+import ssl, socket, json, hashlib, pathlib, logging, requests
+from urllib.parse import urlparse
+from requests.exceptions import SSLError
 
-session = Session()
+log      = logging.getLogger(__name__)
+session  = requests.Session()
+FP_FILE  = pathlib.Path.home() / ".bot_fingerprint.json"
 
+def _fingerprint(der: bytes) -> str:
+    return hashlib.sha256(der).hexdigest()
+
+def _load_fp() -> str | None:
+    return json.loads(FP_FILE.read_text())["fp"] if FP_FILE.exists() else None
+
+def _save_fp(fp: str) -> None:
+    FP_FILE.write_text(json.dumps({"fp": fp}))
+
+def _fetch_cert_der(parsed) -> bytes:
+    host, port = parsed.hostname, parsed.port or 443
+    ctx = ssl.create_default_context()
+    with ctx.wrap_socket(socket.socket(), server_hostname=host) as s:
+        s.settimeout(5)
+        s.connect((host, port))
+        return s.getpeercert(binary_form=True)
 
 def _request(method: str, url: str, **kwargs):
-    """Wrapper that tries once with verification, optionally downgrades."""
-    global VERIFY_SSL
+    pinned = _load_fp()
     try:
-        return session.request(method, url, verify=VERIFY_SSL, timeout=10, **kwargs)
-    except SSLError as e:
-        if VERIFY_SSL is True and VERIFY_ENV != "force" and CA_FILE is None:
-            log.warning("SSL verify failed (%s). Falling back to verify=False once.", e)
-            VERIFY_SSL = False  # downgrade for all future calls
-            return session.request(method, url.replace("https://", "http://"), verify=False, timeout=10, **kwargs)
+        resp = session.request(method, url, verify=False,
+                               timeout=10, stream=True, **kwargs)
+    except SSLError as exc:
+        log.error("TLS-ошибка: %s", exc)
         raise
 
+    cert_der = None
+    try:
+        cert_der = resp.raw.connection.sock.getpeercert(binary_form=True)
+    except AttributeError:
+        cert_der = _fetch_cert_der(urlparse(url))
+
+    current_fp = _fingerprint(cert_der)
+
+    if pinned is None:
+        _save_fp(current_fp)
+        log.info("🎉  Сертификат закреплён, fp=%s…", current_fp[:16])
+    elif pinned != current_fp:
+        raise RuntimeError(
+            f"TLS fingerprint mismatch! old={pinned[:16]}… new={current_fp[:16]}…"
+        )
+
+    return resp
 
 def push_status(txt: str):
     try:
