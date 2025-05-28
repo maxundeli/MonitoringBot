@@ -328,7 +328,7 @@ def _plot_segments(ax, ts, ys, segments, *args, **kwargs):
             ax.plot(ts[s:e+1], ys[s:e+1], *args, **kw)
 def _make_figure(seconds: int):
     long_span = seconds >= 86_400  # ≥ 1 day
-    dpi = 300 if long_span else 150
+    dpi = 500 if long_span else 150
     fig, ax = plt.subplots(figsize=(12, 6), dpi=dpi)
 
     base = 9
