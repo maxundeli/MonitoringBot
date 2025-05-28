@@ -317,7 +317,7 @@ def _request(method: str, url: str, **kwargs):
 
     if pinned is None:
         _save_fp(current_fp)
-        log.info("🎉  Сертификат закреплён, fp=%s…", current_fp[:16])
+        log.info("🎉  Cert saved, fp=%s…", current_fp[:16])
     elif pinned != current_fp:
         raise RuntimeError(
             f"TLS fingerprint mismatch! old={pinned[:16]}… new={current_fp[:16]}…"
