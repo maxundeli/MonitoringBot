@@ -255,7 +255,7 @@ async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid  = update.effective_user.id
 
     clients = [(s, e) for s, e in db["secrets"].items() if is_owner(e, uid)]
-    lines   = [f"`{s}` – {e['nickname']}`" for s, e in clients]
+    lines = [f"`{s}` – {e['nickname']}" for s, e in clients]
 
     active  = db["active"].get(str(update.effective_chat.id))
     msg = ("Твои ключи:\n" + "\n".join(lines)) if lines else "Ключей нет. /newkey создаст."
