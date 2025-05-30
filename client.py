@@ -280,7 +280,7 @@ def run_speedtest() -> tuple[float | None, float | None, float | None]:
 
     try:
         if speedtest:
-            st = speedtest.Speedtest()
+            st = speedtest.Speedtest(secure=True)
             st.get_best_server()
             dl = st.download() / 1e6
             ul = st.upload()   / 1e6
