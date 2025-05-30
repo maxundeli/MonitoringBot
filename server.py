@@ -546,7 +546,7 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.job_queue.run_repeating(
             callback=check_speedtest_done,
             interval=3,
-            repeats=40,  # ≈ 2 минуты
+            count=40,  # ≈ 2 минуты
             data={
                 "secret": secret,
                 "chat_id": msg.chat_id,
