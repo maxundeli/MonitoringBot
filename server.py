@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """remote_bot_server"""
-
+import asyncio
 import io
 import json
 import logging
@@ -516,15 +516,22 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.answer("🚫 Нет доступа.", show_alert=True)
             return
 
-        # ставим команду в очередь для агента
         entry.setdefault("pending", []).append("speedtest")
         save_db(db)
 
-        await q.answer()  # закрываем «часики» на кнопке
-        await ctx.bot.send_message(
+        await q.answer()
+        msg = await ctx.bot.send_message(
             chat_id=q.message.chat_id,
             text="⏳ Тестируем скорость…"
         )
+
+        # ждём до 2 минут, пока агент пришлёт результат
+        for _ in range(40):  # 40 × 3 с ≈ 120 с
+            await asyncio.sleep(3)
+            status = load_db()["secrets"][secret].get("status", "")
+            if "Speedtest" in status:  # агент уже закончил
+                await msg.edit_text(status)
+                break
         return
 
     # ───── graph selection ─────
