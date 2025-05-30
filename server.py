@@ -226,7 +226,9 @@ def is_owner(entry: Dict[str, Any], user_id: int) -> bool:
 def status_keyboard(secret: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("🔃 Обновить", callback_data=f"status:{secret}")],
+            [InlineKeyboardButton("🔃 Обновить", callback_data=f"status:{secret}"),
+             InlineKeyboardButton("🔃 Обновить", callback_data=f"list"),
+        ],
             [InlineKeyboardButton("📊 Все", callback_data=f"graph:all:{secret}")],
             [
                 InlineKeyboardButton("📊 CPU", callback_data=f"graph:cpu:{secret}"),
