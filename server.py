@@ -292,7 +292,6 @@ async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"\n• {info}, ⏳ {escape(uptime)}{marker}"
         )
 
-    # ─── собираем клавиатуру (первые 12, по 4 в ряд) ────────────────────
     buttons = [
         InlineKeyboardButton(
             entry.get("nickname") or s,
@@ -303,7 +302,6 @@ async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ]
     keyboard = InlineKeyboardMarkup([buttons[i:i + 4] for i in range(0, len(buttons), 4)])
 
-    # ─── текст + активный ключ ──────────────────────────────────────────
     active = db["active"].get(str(update.effective_chat.id))
     head   = "Твои ключи:" if rows else "Ключей нет. /newkey создаст."
     if active:
