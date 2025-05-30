@@ -8,6 +8,9 @@ import logging
 import os
 import re
 import secrets
+from html import escape
+from telegram.constants import ParseMode
+import time
 import sqlite3
 import string
 from telegram import InputFile
@@ -62,6 +65,7 @@ CPU_RE = re.compile(r"CPU:\s*([\d.]+)%")
 RAM_RE = re.compile(r"RAM:.*\(([\d.]+)%\)")
 GPU_RE  = re.compile(r"GPU:\s*([\d.]+)%")
 VRAM_RE = re.compile(r"VRAM:.*\(([\d.]+)%\)")
+UPTIME_RE = re.compile(r"Uptime:\s*([^\n]+)")
 COUNTERS: defaultdict[str, int] = defaultdict(int)
 
 def _load_dotenv() -> None:
@@ -253,25 +257,61 @@ async def cmd_setactive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     db   = load_db()
     uid  = update.effective_user.id
+    now  = int(time.time())
 
-    clients = [(s, e) for s, e in db["secrets"].items() if is_owner(e, uid)]
-    lines = [f"`{s}` – {e['nickname']}" for s, e in clients]
+    rows = []
+    for secret, entry in db["secrets"].items():
+        if not is_owner(entry, uid):
+            continue
 
-    active  = db["active"].get(str(update.effective_chat.id))
-    msg = ("Твои ключи:\n" + "\n".join(lines)) if lines else "Ключей нет. /newkey создаст."
-    if active:
-        msg += f"\n*Активный:* `{active}`"
+        name = entry.get("nickname") or secret
 
+        row = sql.execute(
+            "SELECT ts, cpu, ram FROM metrics "
+            "WHERE secret=? ORDER BY ts DESC LIMIT 1",
+            (secret,),
+        ).fetchone()
+
+        if row:
+            ts, cpu, ram = row
+            fresh = (now - ts) < 300
+            info  = f"{cpu:.0f}% CPU, {ram:.0f}% RAM"
+        else:
+            fresh = False
+            info  = "нет данных"
+
+        uptime = "-"
+        if entry.get("status"):
+            m = UPTIME_RE.search(entry["status"])
+            if m:
+                uptime = m.group(1)
+
+        marker = " ❗️ДАННЫЕ УСТАРЕЛИ❗" if not fresh else ""
+        rows.append(
+            f"<code>{escape(secret)}</code> – {escape(name)}"
+            f"\n• {info}, ⏳ {escape(uptime)}{marker}"
+        )
+
+    # ─── собираем клавиатуру (первые 12, по 4 в ряд) ────────────────────
     buttons = [
-        InlineKeyboardButton(e["nickname"] or s, callback_data=f"status:{s}")
-        for s, e in clients[:12]
+        InlineKeyboardButton(
+            entry.get("nickname") or s,
+            callback_data=f"status:{s}",
+        )
+        for s, entry in list(db["secrets"].items())[:12]
+        if is_owner(entry, uid)
     ]
-    rows = [buttons[i:i + 4] for i in range(0, len(buttons), 4)]
-    keyboard = InlineKeyboardMarkup(rows) if rows else None
+    keyboard = InlineKeyboardMarkup([buttons[i:i + 4] for i in range(0, len(buttons), 4)])
+
+    # ─── текст + активный ключ ──────────────────────────────────────────
+    active = db["active"].get(str(update.effective_chat.id))
+    head   = "Твои ключи:" if rows else "Ключей нет. /newkey создаст."
+    if active:
+        head += f"\n<b>Активный:</b> <code>{escape(active)}</code>"
 
     await update.message.reply_text(
-        msg,
-        parse_mode="Markdown",
+        head + "\n" + "\n".join(rows),
+        parse_mode=ParseMode.HTML,
         reply_markup=keyboard,
     )
 
