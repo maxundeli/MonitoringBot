@@ -251,14 +251,29 @@ async def cmd_setactive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Активный: `{secret}`", parse_mode="Markdown")
 
 async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    db = load_db()
-    uid = update.effective_user.id
-    lines = [f"`{s}` – {e['nickname']}" for s, e in db["secrets"].items() if is_owner(e, uid)]
-    active = db["active"].get(str(update.effective_chat.id))
+    db   = load_db()
+    uid  = update.effective_user.id
+
+    clients = [(s, e) for s, e in db["secrets"].items() if is_owner(e, uid)]
+    lines   = [f"`{s}` – {e['nickname']}`" for s, e in clients]
+
+    active  = db["active"].get(str(update.effective_chat.id))
     msg = ("Твои ключи:\n" + "\n".join(lines)) if lines else "Ключей нет. /newkey создаст."
     if active:
         msg += f"\n*Активный:* `{active}`"
-    await update.message.reply_text(msg, parse_mode="Markdown")
+
+    buttons = [
+        InlineKeyboardButton(e["nickname"] or s, callback_data=f"status:{s}")
+        for s, e in clients[:12]
+    ]
+    rows = [buttons[i:i + 4] for i in range(0, len(buttons), 4)]
+    keyboard = InlineKeyboardMarkup(rows) if rows else None
+
+    await update.message.reply_text(
+        msg,
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+    )
 
 def resolve_secret(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> str | None:
     db = load_db()
