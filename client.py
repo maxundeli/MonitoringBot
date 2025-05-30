@@ -208,12 +208,99 @@ def gather_gpu() -> tuple[str, str, str, str] | None:
             )
         except Exception:
             pass
+    # 3) AMD через amdsmi --------------------------------------------------
+    try:
+        import amdsmi
+        amdsmi.amdsmi_init()
+        handles = amdsmi.amdsmi_get_processor_handles()
+        if handles:
+            h = handles[0]
+            util = amdsmi.amdsmi_get_gpu_activity(h)["gfx_activity"]
+            vram = amdsmi.amdsmi_get_gpu_vram_usage(h)
+            used = vram["vram_used"] / 2 ** 20
+            total = vram["vram_total"] / 2 ** 20
+            temp = amdsmi.amdsmi_get_temp_metric(
+                h,
+                amdsmi.AmdSmiTemperatureMetric.CURRENT,
+                amdsmi.AmdSmiTemperatureType.GPU_EDGE)["temperature"] / 1000
+            amdsmi.amdsmi_shut_down()
+            return (
+                "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
+                f"🎮 GPU: {util:.1f}%",
+                f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB ({used / total * 100:.1f}%)",
+                f"🌡️ GPU Temp: {temp:.0f} °C"
+            )
+    except Exception:
+        pass
 
-    # ── 3) GPUtil
+    # 4) AMD через CLI ------------------------------------------------------
+    if shutil.which("amd-smi"):
+        try:
+            out = subprocess.check_output(
+                ["amd-smi", "metric", "--json", "--gpu", "0"],
+                text=True, timeout=2,
+            )
+            import json, math
+            data = json.loads(out)["metric"][0]  # структура CLI
+            util = data["gfx_activity"]
+            used = data["vram_usage"]["used_vram_bytes"] / 2 ** 20
+            total = data["vram_usage"]["total_vram_bytes"] / 2 ** 20
+            temp = data["temperature"]["edge_current_temp"] / 1000
+            return (
+                "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
+                f"🎮 GPU: {util:.1f}%",
+                f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB ({used / total * 100:.1f}%)",
+                f"🌡️ GPU Temp: {temp:.0f} °C"
+            )
+        except Exception:
+            pass
+    if platform.system() == "Windows":
+
+        try:
+            import adlxpy  #
+            helper = adlxpy.ADLXHelper()
+            if helper.initialize():
+                system = helper.get_system()
+                gpu = system.get_gpus().at(0)
+                perf = system.get_performance_monitoring_services()
+                metrics = perf.get_gpu_metrics(gpu)
+
+                util = metrics.gpu_utilization()  # %
+                vram = metrics.vram_usage()  # bytes tuple
+                used = vram.vram_used() / 2 ** 20
+                total = vram.vram_total() / 2 ** 20
+                temp = metrics.gpu_temperatures().edge_current()  # °C
+
+                helper.terminate()
+                return ("*━━━━━━━━━━━GPU━━━━━━━━━━━*",
+                        f"🎮 GPU: {util}%",
+                        f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB "
+                        f"({used / total * 100:.1f}%)",
+                        f"🌡️ GPU Temp: {temp:.0f} °C")
+        except Exception:
+            pass
+
+        # 3-b-2) PyADL - запасной вариант
+        try:
+            from pyadl import ADLManager
+            devs = ADLManager.getInstance().getDevices()
+            if devs:
+                dev = devs[0]
+                util = dev.getCurrentUsage()  # %
+                temp = dev.getCurrentTemperature()  # °C
+
+                return ("*━━━━━━━━━━━GPU━━━━━━━━━━━*",
+                        f"🎮 GPU: {util}%",
+                        "🗄️ VRAM: n/a",
+                        f"🌡️ GPU Temp: {temp:.0f} °C")
+        except Exception:
+            pass
+
+    # ── 4) GPUtil
     try:
         import GPUtil
         gpu = GPUtil.getGPUs()[0]
-        util = gpu.load * 100                           # 0-1 → %
+        util = gpu.load * 100
         used = gpu.memoryUsed
         total = gpu.memoryTotal
         temp = gpu.temperature
