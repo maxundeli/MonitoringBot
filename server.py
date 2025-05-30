@@ -124,22 +124,27 @@ logging.basicConfig(
 )
 log = logging.getLogger("remote-bot")
 async def check_speedtest_done(ctx: ContextTypes.DEFAULT_TYPE):
-
     job   = ctx.job
     data  = job.data
     secret   = data["secret"]
     chat_id  = data["chat_id"]
     msg_id   = data["msg_id"]
 
-    status = load_db()["secrets"].get(secret, {}).get("status", "")
-    if "Speedtest" in status:
-        await ctx.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=msg_id,
-            text=status,
-            parse_mode="Markdown",
-        )
-        job.schedule_removal()
+    entry = load_db()["secrets"].get(secret, {})
+
+    if "speedtest" in entry.get("pending", []):
+        return
+
+
+    status = entry.get("status", "данных нет.")
+
+    await ctx.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=msg_id,
+        text=status,
+        parse_mode="Markdown",
+    )
+    job.schedule_removal()
 
 # ───────────────────── SQLite helpers ──────────────────────────────────────
 def _init_metric_db() -> sqlite3.Connection:
