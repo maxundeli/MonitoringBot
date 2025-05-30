@@ -201,8 +201,8 @@ def status_keyboard(secret: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("🗄️ VRAM", callback_data=f"graph:vram:{secret}"),
             ],
             [
-               [InlineKeyboardButton("🏎️ Speedtest", callback_data=f"speedtest:{secret}")],
-               [InlineKeyboardButton("🔃 Обновить", callback_data=f"status:{secret}")],
+               InlineKeyboardButton("🏎️ Speedtest", callback_data=f"speedtest:{secret}"),
+               InlineKeyboardButton("🔃 Обновить", callback_data=f"status:{secret}"),
             ],
             [
                 InlineKeyboardButton("🔄 Reboot",   callback_data=f"reboot:{secret}"),
