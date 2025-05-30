@@ -275,7 +275,7 @@ async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if row:
             ts, cpu, ram = row
             fresh = (now - ts) < 300
-            info  = f"{cpu:.0f}% CPU, {ram:.0f}% RAM"
+            info  = f"🖥️{cpu:.0f}% CPU, 🧠{ram:.0f}% RAM"
         else:
             fresh = False
             info  = "нет данных"
