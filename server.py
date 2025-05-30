@@ -226,8 +226,8 @@ def is_owner(entry: Dict[str, Any], user_id: int) -> bool:
 def status_keyboard(secret: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("🔃 Обновить", callback_data=f"status:{secret}"),
-             InlineKeyboardButton("🔃 Обновить", callback_data=f"list"),
+            [InlineKeyboardButton("🔢 Список", callback_data=f"list"),
+             InlineKeyboardButton("🔃 Обновить", callback_data=f"status:{secret}"),
         ],
             [InlineKeyboardButton("📊 Все", callback_data=f"graph:all:{secret}")],
             [
@@ -548,6 +548,69 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not entry or not is_owner(entry, q.from_user.id):
             await q.answer("🚫 Нет доступа.", show_alert=True)
             return
+    if action == "list":
+        uid = q.from_user.id
+        now = int(time.time())
+        rows = []
+
+        for secret, entry in db["secrets"].items():
+            if not is_owner(entry, uid):
+                continue
+
+            name = entry.get("nickname") or secret
+
+            row = sql.execute(
+                "SELECT ts, cpu, ram FROM metrics "
+                "WHERE secret=? ORDER BY ts DESC LIMIT 1",
+                (secret,),
+            ).fetchone()
+
+            if row:
+                ts, cpu, ram = row
+                fresh = (now - ts) < 300
+                info = f"🖥️{cpu:.0f}% CPU, 🧠{ram:.0f}% RAM"
+            else:
+                fresh = False
+                info = "нет данных"
+
+            uptime = "-"
+            if entry.get("status"):
+                m = UPTIME_RE.search(entry["status"])
+                if m:
+                    uptime = m.group(1)
+
+            marker = " <b>❗️ДАННЫЕ УСТАРЕЛИ❗</b>" if not fresh else ""
+            rows.append(
+                f"<b>{escape(name)}</b> – <code>{escape(secret)}</code>"
+                f"\n• {info}, ⏳ {escape(uptime)}{marker}\n"
+            )
+
+        # те же кнопочки, но теперь они уедут в reply_markup
+        buttons = [
+            InlineKeyboardButton(
+                entry.get("nickname") or s,
+                callback_data=f"status:{s}",
+            )
+            for s, entry in db["secrets"].items()
+            if is_owner(entry, uid)
+        ]
+        keyboard = InlineKeyboardMarkup(
+            [buttons[i:i + 4] for i in range(0, len(buttons), 4)]
+        )
+
+        active = db["active"].get(str(q.message.chat_id))
+        head = "Твои ключи:" if rows else "Ключей нет. /newkey создаст."
+        if active:
+            head += f"\n<b>Активный:</b> <code>{escape(active)}</code>"
+
+        await q.edit_message_text(
+            head + "\n" + "\n".join(rows),
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+        return
+
+
 
         entry.setdefault("pending", []).append("speedtest")
         save_db(db)
