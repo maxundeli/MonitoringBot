@@ -288,7 +288,7 @@ async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         marker = " ❗️ДАННЫЕ УСТАРЕЛИ❗" if not fresh else ""
         rows.append(
-            f"*{escape(name)}* – <code>{escape(secret)}</code>"
+            f"<b>{escape(name)}</b> – <code>{escape(secret)}</code>"
             f"\n• {info}, ⏳ {escape(uptime)}{marker}"
             f"\n"
         )
