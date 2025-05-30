@@ -10,6 +10,10 @@ try:
     import wmi
 except ImportError:
     wmi = None
+try:
+    import speedtest
+except ImportError:
+    speedtest = None
 import re
 import subprocess
 import sys
@@ -272,6 +276,29 @@ def gather_status() -> str:
         lines.extend(gpu_lines)
     lines.extend(disk_lines)
     return "\n".join(lines)
+def run_speedtest() -> tuple[float | None, float | None, float | None]:
+
+    try:
+        if speedtest:
+            st = speedtest.Speedtest()
+            st.get_best_server()
+            dl = st.download() / 1e6
+            ul = st.upload()   / 1e6
+            return dl, ul, st.results.ping
+
+        import shutil, subprocess, json
+        if shutil.which("speedtest"):
+            out = subprocess.check_output(
+                ["speedtest", "--format=json"], text=True, timeout=120
+            )
+            data = json.loads(out)
+            dl = data["download"]["bandwidth"] * 8 / 1e6
+            ul = data["upload"]["bandwidth"]  * 8 / 1e6
+            ping = data["ping"]["latency"]
+            return dl, ul, ping
+    except Exception as exc:
+        log.error("speedtest failed: %s", exc)
+    return None, None, None
 # ────── network layer: TLS TOFU + fingerprint pinning ────────────
 import ssl, socket, json, hashlib, pathlib, logging, requests
 from urllib.parse import urlparse
@@ -371,4 +398,15 @@ while True:
             log.info("cmd reboot"); push_status("⚡️ Rebooting…"); do_reboot()
         elif c == "shutdown":
             log.info("cmd shutdown"); push_status("💤 Shutting down…"); do_shutdown()
+        elif c == "speedtest":
+            log.info("cmd speedtest")
+            push_status("⏳ Тестируем скорость…")
+            dl, ul, ping = run_speedtest()
+            if dl is not None:
+                push_status(
+                    f"💨 Speedtest:\n"
+                    f"↓ {dl:.1f} Mbit/s  ↑ {ul:.1f} Mbit/s  Ping {ping:.0f} ms"
+                )
+            else:
+                push_status("⚠️  Speedtest не удался.")
     time.sleep(INTERVAL)

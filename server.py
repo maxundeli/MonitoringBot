@@ -200,7 +200,10 @@ def status_keyboard(secret: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("🎮 GPU",  callback_data=f"graph:gpu:{secret}"),
                 InlineKeyboardButton("🗄️ VRAM", callback_data=f"graph:vram:{secret}"),
             ],
-            [InlineKeyboardButton("🔃 Обновить", callback_data=f"status:{secret}")],
+            [
+               [InlineKeyboardButton("🏎️ Speedtest", callback_data=f"speedtest:{secret}")],
+               [InlineKeyboardButton("🔃 Обновить", callback_data=f"status:{secret}")],
+            ],
             [
                 InlineKeyboardButton("🔄 Reboot",   callback_data=f"reboot:{secret}"),
                 InlineKeyboardButton("⏻ Shutdown", callback_data=f"shutdown:{secret}"),
@@ -506,6 +509,23 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         entry.setdefault("pending", []).append(action)
         save_db(db)
         return await q.edit_message_text(f"☑️ *{action}* поставлена в очередь.", parse_mode="Markdown")
+    if action == "speedtest":
+        secret = parts[1]
+        entry = db["secrets"].get(secret)
+        if not entry or not is_owner(entry, q.from_user.id):
+            await q.answer("🚫 Нет доступа.", show_alert=True)
+            return
+
+        # ставим команду в очередь для агента
+        entry.setdefault("pending", []).append("speedtest")
+        save_db(db)
+
+        await q.answer()  # закрываем «часики» на кнопке
+        await ctx.bot.send_message(
+            chat_id=q.message.chat_id,
+            text="⏳ Тестируем скорость…"
+        )
+        return
 
     # ───── graph selection ─────
     if action == "graph":

@@ -6,3 +6,4 @@ psutil>=5.9
 requests>=2.31
 pydantic>=2.6
 gputil
+speedtest-cli
