@@ -123,6 +123,23 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("remote-bot")
+async def check_speedtest_done(ctx: ContextTypes.DEFAULT_TYPE):
+
+    job   = ctx.job
+    data  = job.data
+    secret   = data["secret"]
+    chat_id  = data["chat_id"]
+    msg_id   = data["msg_id"]
+
+    status = load_db()["secrets"].get(secret, {}).get("status", "")
+    if "Speedtest" in status:
+        await ctx.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=msg_id,
+            text=status,
+            parse_mode="Markdown",
+        )
+        job.schedule_removal()
 
 # ───────────────────── SQLite helpers ──────────────────────────────────────
 def _init_metric_db() -> sqlite3.Connection:
@@ -521,15 +538,17 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             text="⏳ Тестируем скорость…"
         )
 
-        # ждём до 2 минут, пока агент пришлёт результат
-        for _ in range(40):  # 40 × 3 с ≈ 120 с
-            await asyncio.sleep(3)
-            status = load_db()["secrets"][secret].get("status", "")
-            if "Speedtest" in status:  # агент уже закончил
-                await msg.edit_text(status)
-                break
+        ctx.application.job_queue.run_repeating(
+            callback=check_speedtest_done,
+            interval=3,
+            repeats=40,  # ≈ 2 минуты
+            data={
+                "secret": secret,
+                "chat_id": msg.chat_id,
+                "msg_id": msg.message_id,
+            },
+        )
         return
-
     # ───── graph selection ─────
     if action == "graph":
         metric = parts[1]

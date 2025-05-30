@@ -3,7 +3,7 @@ from __future__ import annotations
 """pc_agent_tls.py – Lightweight PC agent."""
 
 
-import logging
+import logging, threading
 import os
 import platform
 try:
@@ -299,6 +299,19 @@ def run_speedtest() -> tuple[float | None, float | None, float | None]:
     except Exception as exc:
         log.error("speedtest failed: %s", exc)
     return None, None, None
+# ---------- async speedtest helper ----------
+speedtest_running = False      # флаг «тест уже идёт»
+
+def _speedtest_job():
+    global speedtest_running
+    push_status("⏳ Тестируем скорость…")
+    dl, ul, ping = run_speedtest()
+    if dl is not None:
+        push_status(f"💨 Speedtest:\n"
+                    f"↓ {dl:.1f} Mbit/s  ↑ {ul:.1f} Mbit/s  Ping {ping:.0f} ms")
+    else:
+        push_status("⚠️  Speedtest не удался.")
+    speedtest_running = False
 # ────── network layer: TLS TOFU + fingerprint pinning ────────────
 import ssl, socket, json, hashlib, pathlib, logging, requests
 from urllib.parse import urlparse
@@ -399,14 +412,11 @@ while True:
         elif c == "shutdown":
             log.info("cmd shutdown"); push_status("💤 Shutting down…"); do_shutdown()
         elif c == "speedtest":
-            log.info("cmd speedtest")
-            push_status("⏳ Тестируем скорость…")
-            dl, ul, ping = run_speedtest()
-            if dl is not None:
-                push_status(
-                    f"💨 Speedtest:\n"
-                    f"↓ {dl:.1f} Mbit/s  ↑ {ul:.1f} Mbit/s  Ping {ping:.0f} ms"
-                )
+            # запускаем тест в отдельном потоке, чтобы не блокировать основной цикл
+            if not speedtest_running:
+                log.info("cmd speedtest (async)")
+                speedtest_running = True
+                threading.Thread(target=_speedtest_job, daemon=True).start()
             else:
-                push_status("⚠️  Speedtest не удался.")
+                push_status("🚧 Speedtest уже выполняется, дождитесь окончания.")
     time.sleep(INTERVAL)
