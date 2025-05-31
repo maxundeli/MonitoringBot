@@ -542,12 +542,6 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         entry.setdefault("pending", []).append(action)
         save_db(db)
         return await q.edit_message_text(f"☑️ *{action}* поставлена в очередь.", parse_mode="Markdown")
-    if action == "speedtest":
-        secret = parts[1]
-        entry = db["secrets"].get(secret)
-        if not entry or not is_owner(entry, q.from_user.id):
-            await q.answer("🚫 Нет доступа.", show_alert=True)
-            return
     if action == "list":
         uid = q.from_user.id
         now = int(time.time())
@@ -612,6 +606,12 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 
+    if action == "speedtest":
+        secret = parts[1]
+        entry = db["secrets"].get(secret)
+        if not entry or not is_owner(entry, q.from_user.id):
+            await q.answer("🚫 Нет доступа.", show_alert=True)
+            return
         entry.setdefault("pending", []).append("speedtest")
         save_db(db)
 
