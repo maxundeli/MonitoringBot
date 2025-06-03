@@ -1,12 +1,11 @@
 fastapi>=0.110,<0.200
 uvicorn[standard]>=0.27,<0.30
-python-telegram-bot>=20.0,<21.0
+python-telegram-bot[job-queue]>=20.0,<21.0
 matplotlib>=3.8
 psutil>=5.9
 requests>=2.31
 pydantic>=2.6
-gputil
-speedtest-cli
-python-telegram-bot[job-queue]
+GPUtil>=1.4.0
+speedtest-cli>=2.1
 pynvml~=12.0.0
 numpy~=2.2.6
