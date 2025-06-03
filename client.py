@@ -168,22 +168,59 @@ def gather_disks_metrics() -> List[dict]:
     return data
 
 def gather_gpu_metrics() -> dict | None:
-    try:
-        import pynvml
-        pynvml.nvmlInit()
-        h = pynvml.nvmlDeviceGetHandleByIndex(0)
-        util = pynvml.nvmlDeviceGetUtilizationRates(h).gpu
-        mem = pynvml.nvmlDeviceGetMemoryInfo(h)
-        temp = pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU)
-        return {
-            "gpu": util,
-            "vram_used": mem.used / 2 ** 20,
-            "vram_total": mem.total / 2 ** 20,
-            "vram": mem.used / mem.total * 100,
-            "gpu_temp": temp,
-        }
-    except Exception:
-        return None
+    """Return GPU utilisation depending on OS/vendor."""
+    system = platform.system()
+
+    # ── 1) NVIDIA on Linux via NVML ───────────────────────────────────────
+    if system == "Linux" and shutil.which("nvidia-smi"):
+        try:
+            import pynvml
+
+            pynvml.nvmlInit()
+            h = pynvml.nvmlDeviceGetHandleByIndex(0)
+            util = pynvml.nvmlDeviceGetUtilizationRates(h).gpu
+            mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+            temp = pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU)
+
+            return {
+                "gpu": util,
+                "vram_used": mem.used / 2 ** 20,
+                "vram_total": mem.total / 2 ** 20,
+                "vram": mem.used / mem.total * 100,
+                "gpu_temp": temp,
+            }
+        except Exception as exc:
+            log.warning("NVML error: %s", exc)
+
+    # ── 2) AMD on Windows via ADLX ────────────────────────────────────────
+    if system == "Windows":
+        try:
+            import adlxpy
+
+            helper = adlxpy.ADLXHelper()
+            if helper.initialize():
+                system_obj = helper.get_system()
+                gpu = system_obj.get_gpus().at(0)
+                perf = system_obj.get_performance_monitoring_services()
+                metrics = perf.get_gpu_metrics(gpu)
+
+                util = metrics.gpu_utilization()
+                vram = metrics.vram_usage()
+                temp = metrics.gpu_temperatures().edge_current()
+
+                data = {
+                    "gpu": util,
+                    "vram_used": vram.vram_used() / 2 ** 20,
+                    "vram_total": vram.vram_total() / 2 ** 20,
+                    "vram": vram.vram_used() / vram.vram_total() * 100,
+                    "gpu_temp": temp,
+                }
+                helper.terminate()
+                return data
+        except Exception as exc:
+            log.warning("ADLX error: %s", exc)
+
+    return None
 
 def get_cpu_temp() -> str | None:
     # ── 1) стандартный psutil ─────────────────────────────
