@@ -48,11 +48,6 @@ ENV_FILE = Path(".env")
 DB_FILE = Path("db.json")
 METRIC_DB = Path("metrics.sqlite")
 API_PORT = int(os.getenv("PORT", "8000"))
-SUM_CPU = defaultdict(float)
-SUM_RAM = defaultdict(float)
-SUM_GPU = defaultdict(float)
-SUM_VRAM = defaultdict(float)
-COUNTERS = defaultdict(int)
 
 CERT_FILE = Path(os.getenv("SSL_CERT", "cert.pem"))
 KEY_FILE = Path(os.getenv("SSL_KEY", "key.pem"))
@@ -61,12 +56,60 @@ KEY_FILE = Path(os.getenv("SSL_KEY", "key.pem"))
 matplotlib.use("Agg")
 
 # ────────────────────────── helpers ────────────────────────────────────────
-CPU_RE = re.compile(r"CPU:\s*([\d.]+)%")
-RAM_RE = re.compile(r"RAM:.*\(([\d.]+)%\)")
-GPU_RE  = re.compile(r"GPU:\s*([\d.]+)%")
-VRAM_RE = re.compile(r"VRAM:.*\(([\d.]+)%\)")
+
 UPTIME_RE = re.compile(r"Uptime:\s*([^\n]+)")
-COUNTERS: defaultdict[str, int] = defaultdict(int)
+
+UNIT_NAMES = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+
+def human_bytes(num: float) -> str:
+    for unit in UNIT_NAMES:
+        if num < 1024:
+            return f"{num:.1f} {unit}"
+        num /= 1024
+    return f"{num:.1f} EiB"
+
+def disk_bar(p: float, length=10) -> str:
+    filled = int(round(p * length / 100))
+    return "█" * filled + "░" * (length - filled)
+
+def build_status(p: MetricsPayload) -> str:
+    lines = [
+        "💻 *PC stats*",
+        f"⏳ Uptime: {timedelta(seconds=int(p.uptime))}",
+        "*━━━━━━━━━━━CPU━━━━━━━━━━━*",
+        f"🖥️ CPU: {p.cpu:.1f}%",
+    ]
+    if p.cpu_temp is not None:
+        lines.append(f"🌡️ CPU Temp: {p.cpu_temp:.1f} °C")
+    lines.extend([
+        "*━━━━━━━━━━━RAM━━━━━━━━━━━*",
+        f"🧠 RAM: {human_bytes(p.ram_used)} / {human_bytes(p.ram_total)} ({p.ram:.1f}%)",
+        f"🧠 SWAP: {human_bytes(p.swap_used)} / {human_bytes(p.swap_total)} ({p.swap:.1f}%)",
+    ])
+    if p.gpu is not None:
+        lines.extend([
+            "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
+            f"🎮 GPU: {p.gpu:.1f}%",
+        ])
+        if p.vram_used is not None and p.vram_total is not None:
+            lines.append(
+                f"🗄️ VRAM: {p.vram_used:.0f} / {p.vram_total:.0f} MiB ({p.vram:.1f}%)"
+            )
+        if p.gpu_temp is not None:
+            lines.append(f"🌡️ GPU Temp: {p.gpu_temp:.0f} °C")
+    if p.disks:
+        lines.append("*━━━━━━━━━━━DISKS━━━━━━━━━━*")
+        for d in p.disks:
+            mp = d.get("mount") or d.get("mountpoint")
+            percent = d.get("percent", 0.0)
+            used = d.get("used", 0.0)
+            total = d.get("total", 0.0)
+            bar = disk_bar(percent)
+            warn = "❗" if percent >= 90 else ""
+            lines.append(
+                f"💾 {mp}: {bar} {percent:.0f}% ({human_bytes(used)} / {human_bytes(total)}){warn}"
+            )
+    return "\n".join(lines)
 
 def _load_dotenv() -> None:
     if not ENV_FILE.exists():
@@ -164,12 +207,14 @@ def _init_metric_db() -> sqlite3.Connection:
     con = sqlite3.connect(METRIC_DB, check_same_thread=False, isolation_level=None)
     con.execute(
         """CREATE TABLE IF NOT EXISTS metrics(
-               secret TEXT,
-               ts     INTEGER,
-               cpu    REAL,
-               ram    REAL,
-               gpu    REAL,
-               vram   REAL
+               secret    TEXT,
+               ts        INTEGER,
+               cpu       REAL,
+               ram       REAL,
+               gpu       REAL,
+               vram      REAL,
+               cpu_temp  REAL,
+               uptime    REAL
         )"""
     )
     con.execute(
@@ -180,18 +225,45 @@ def _init_metric_db() -> sqlite3.Connection:
 sql = _init_metric_db()
 
 def record_metric(secret: str, cpu: float, ram: float,
-                  gpu: float | None, vram: float | None):
+                  gpu: float | None, vram: float | None,
+                  cpu_temp: float | None, uptime: float | None):
     sql.execute(
-        "INSERT INTO metrics(secret, ts, cpu, ram, gpu, vram) VALUES(?,?,?,?,?,?)",
-        (secret, int(time.time()), cpu, ram, gpu, vram),
+        "INSERT INTO metrics(secret, ts, cpu, ram, gpu, vram, cpu_temp, uptime) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (secret, int(time.time()), cpu, ram, gpu, vram, cpu_temp, uptime),
     )
 
 def fetch_metrics(secret: str, since: int) -> List[tuple[int, float]]:
     rows = sql.execute(
-        "SELECT ts, cpu, ram, gpu, vram FROM metrics WHERE secret=? AND ts>=? ORDER BY ts ASC",
+        "SELECT ts, cpu, ram, gpu, vram FROM metrics WHERE secret=? AND ts>=? "
+        "ORDER BY ts ASC",
         (secret, since),
     ).fetchall()
     return rows
+
+def group_30s(rows: List[tuple[int, float]]) -> List[tuple[int, float, float, float, float]]:
+    buckets: Dict[int, list] = {}
+    for r in rows:
+        ts = r[0] - (r[0] % 30)
+        buckets.setdefault(ts, []).append(r)
+    grouped = []
+    for ts in sorted(buckets):
+        vals = buckets[ts]
+        n = len(vals)
+        cpu = sum(v[1] for v in vals) / n
+        ram = sum(v[2] for v in vals) / n
+        gpu = (
+            sum(v[3] for v in vals if v[3] is not None) / n
+            if any(v[3] is not None for v in vals)
+            else None
+        )
+        vram = (
+            sum(v[4] for v in vals if v[4] is not None) / n
+            if any(v[4] is not None for v in vals)
+            else None
+        )
+        grouped.append((ts, cpu, ram, gpu, vram))
+    return grouped
 
 # ──────────────────────── JSON DB helpers ──────────────────────────────────
 def load_db() -> Dict[str, Any]:
@@ -436,6 +508,7 @@ def plot_metric(secret: str, metric: str, seconds: int):
     if not rows:
         return None
 
+    rows = group_30s(rows)
     ts = [datetime.fromtimestamp(r[0]) for r in rows]
 
     idx_map = {
@@ -475,6 +548,7 @@ def plot_all_metrics(secret: str, seconds: int):
     if not rows:
         return None
 
+    rows = group_30s(rows)
     ts = [datetime.fromtimestamp(r[0]) for r in rows]
     segments, gaps, _ = _find_gaps(ts)
 
@@ -684,65 +758,54 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ────────────────────────── FastAPI for agents ─────────────────────────────
 app = FastAPI()
 
-class StatusPayload(BaseModel):
+
+class MetricsPayload(BaseModel):
+    cpu: float
+    ram: float
+    ram_used: float
+    ram_total: float
+    swap: float
+    swap_used: float
+    swap_total: float
+    uptime: float
+    cpu_temp: float | None = None
+    gpu: float | None = None
+    vram: float | None = None
+    vram_used: float | None = None
+    vram_total: float | None = None
+    gpu_temp: float | None = None
+    disks: list[dict] = []
+
+class TextPayload(BaseModel):
     text: str
 
 @app.post("/api/push/{secret}")
-async def push(secret: str, payload: StatusPayload):
+async def push(secret: str, payload: MetricsPayload):
     db = load_db()
     if secret not in db["secrets"]:
         raise HTTPException(404)
+    record_metric(
+        secret,
+        payload.cpu,
+        payload.ram,
+        payload.gpu,
+        payload.vram,
+        payload.cpu_temp,
+        payload.uptime,
+    )
 
-    # Сохраняем последний статус для /status в Telegram-боте
-    db["secrets"][secret]["status"] = payload.text
+    db["secrets"][secret]["status"] = build_status(payload)
     save_db(db)
 
-    # ───── парсинг чисел ─────
-    cpu_m  = CPU_RE.search(payload.text)
-    ram_m  = RAM_RE.search(payload.text)
-    gpu_m  = GPU_RE.search(payload.text)
-    vram_m = VRAM_RE.search(payload.text)
+    return {"ok": True}
 
-    # CPU и RAM считаем обязательными: если их нет — просто выходим
-    if not (cpu_m and ram_m):
-        return {"ok": True}
-
-    try:
-        cpu_val  = float(cpu_m.group(1))
-        ram_val  = float(ram_m.group(1))
-        gpu_val  = float(gpu_m.group(1)) if gpu_m else None
-        vram_val = float(vram_m.group(1)) if vram_m else None
-    except ValueError:
-        # Невалидные числа — игнорируем этот пуш
-        return {"ok": True}
-
-    # ───── аккумуляторы ─────
-    SUM_CPU[secret]  += cpu_val
-    SUM_RAM[secret]  += ram_val
-    SUM_GPU[secret]  += gpu_val  if gpu_val  is not None else 0.0
-    SUM_VRAM[secret] += vram_val if vram_val is not None else 0.0
-    COUNTERS[secret] += 1
-
-    # Каждые 6 пушей (примерно 1 минута при шаге 10 с) пишем усреднённое
-    if COUNTERS[secret] >= 6:
-        avg_cpu  = SUM_CPU[secret]  / COUNTERS[secret]
-        avg_ram  = SUM_RAM[secret]  / COUNTERS[secret]
-        avg_gpu  = (
-            SUM_GPU[secret] / COUNTERS[secret] if gpu_m else None
-        )
-        avg_vram = (
-            SUM_VRAM[secret] / COUNTERS[secret] if vram_m else None
-        )
-
-        record_metric(secret, avg_cpu, avg_ram, avg_gpu, avg_vram)
-
-        # сбрасываем счётчики
-        SUM_CPU[secret]  = 0.0
-        SUM_RAM[secret]  = 0.0
-        SUM_GPU[secret]  = 0.0
-        SUM_VRAM[secret] = 0.0
-        COUNTERS[secret] = 0
-
+@app.post("/api/msg/{secret}")
+async def push_text(secret: str, payload: TextPayload):
+    db = load_db()
+    if secret not in db["secrets"]:
+        raise HTTPException(404)
+    db["secrets"][secret]["status"] = payload.text
+    save_db(db)
     return {"ok": True}
 
 @app.get("/api/pull/{secret}")
