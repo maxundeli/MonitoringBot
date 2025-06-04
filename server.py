@@ -127,6 +127,18 @@ def human_bytes(num: float) -> str:
         num /= 1024
     return f"{num:.1f} EiB"
 
+def best_unit(max_val: float) -> tuple[float, str]:
+    """Return scale factor and unit for network speeds."""
+    scale = 1.0
+    unit = UNIT_NAMES[0] + "/s"
+    idx = 0
+    while idx < len(UNIT_NAMES) - 1 and max_val >= 1024:
+        max_val /= 1024
+        idx += 1
+        scale *= 1024
+        unit = UNIT_NAMES[idx] + "/s"
+    return scale, unit
+
 def disk_bar(p: float, length: int = 10) -> str:
     filled = int(round(p * length / 100))
     return "█" * filled + "░" * (length - filled)
@@ -756,6 +768,15 @@ def plot_metric(secret: str, metric: str, seconds: int):
     col_idx, label, ylab, ylim = idx_map[metric]
     ys = [np.nan if rows[i][col_idx] is None else rows[i][col_idx] for i in range(len(rows))]
 
+    if metric.startswith("net_"):
+        max_val = max([v for v in ys if not np.isnan(v)] or [0])
+        scale, unit = best_unit(max_val)
+        if scale != 1:
+            ys = [v / scale if not np.isnan(v) else np.nan for v in ys]
+        ylab = unit
+        if max_val:
+            ylim = (0, (max_val / scale) * 1.1)
+
     segments, gaps, _ = _find_gaps(ts)
 
     plt.style.use("dark_background")
@@ -789,6 +810,16 @@ def plot_net(secret: str, seconds: int):
     ts = [datetime.fromtimestamp(r[0]) for r in rows]
     up = [np.nan if r[5] is None else r[5] for r in rows]
     down = [np.nan if r[6] is None else r[6] for r in rows]
+    max_val = max(
+        [v for v in up + down if not np.isnan(v)] or [0]
+    )
+    scale, unit = best_unit(max_val)
+    if scale != 1:
+        up = [v / scale if not np.isnan(v) else np.nan for v in up]
+        down = [v / scale if not np.isnan(v) else np.nan for v in down]
+    ylim_top = None
+    if max_val:
+        ylim_top = (max_val / scale) * 1.1
     segments, gaps, _ = _find_gaps(ts)
 
     plt.style.use("dark_background")
@@ -802,7 +833,9 @@ def plot_net(secret: str, seconds: int):
 
     ax.set_title(f"Net за {timedelta(seconds=seconds)}")
     ax.set_xlabel("Время")
-    ax.set_ylabel("B/s")
+    ax.set_ylabel(unit)
+    if ylim_top is not None:
+        ax.set_ylim(0, ylim_top)
     ax.grid(True, linestyle="--", linewidth=0.3)
     ax.legend(loc="upper left", fontsize="small")
     fig.autofmt_xdate()
