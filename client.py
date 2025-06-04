@@ -117,31 +117,17 @@ INTERVAL = int(os.getenv("AGENT_INTERVAL", "5"))
 
 log.info("Config → server %s verify=%s interval %ss", SERVER, VERIFY_SSL, INTERVAL)
 
-# ────────────────────────── metric helpers ────────────────────────────────
-
-UNIT_NAMES = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
-
-def human_bytes(num: float) -> str:
-    for unit in UNIT_NAMES:
-        if num < 1024:
-            return f"{num:.1f} {unit}"
-        num /= 1024
-    return f"{num:.1f} EiB"
 
 
-def disk_bar(p: float, length=10) -> str:
-    filled = int(round(p * length / 100))
-    return "█" * filled + "░" * (length - filled)
 
 
-def gather_disks() -> List[str]:
+def gather_disks_metrics() -> List[dict]:
     EXCL_FSTYPES        = {"tmpfs", "devtmpfs", "squashfs", "overlay", "aufs"}
     EXCL_DEV_PREFIXES   = ("/dev/loop",)                     # snap-loop’ы и пр.
     EXCL_MOUNT_PREFIXES = ("/snap", "/var/lib/docker", "/var/snap", "/boot")
     MIN_SIZE_BYTES      = 1 << 30                           # 1 ГиБ
 
-    lines, seen = [], set()
-    lines.append("*━━━━━━━━━━━DISKS━━━━━━━━━━*")
+    res, seen = [], set()
 
     for part in psutil.disk_partitions(all=False):
         if (part.mountpoint in seen
@@ -158,161 +144,15 @@ def gather_disks() -> List[str]:
 
         if u.total < MIN_SIZE_BYTES:
             continue
+        res.append({
+            "mount": part.mountpoint,
+            "percent": u.percent,
+            "used": u.used,
+            "total": u.total,
+        })
 
-        disk_string = (
-            f"💾 {part.mountpoint}: {disk_bar(u.percent)} "
-            f"{u.percent:.0f}% ({human_bytes(u.used)} / {human_bytes(u.total)})"
-        )
-        if u.percent >= 90:
-            disk_string += "❗"
-        lines.append(disk_string)
+    return res
 
-    return lines
-def gather_gpu() -> tuple[str, str, str, str] | None:
-    # ── 1) pynvml ─────────────────────────────
-    try:
-        import pynvml
-        pynvml.nvmlInit()
-        h = pynvml.nvmlDeviceGetHandleByIndex(0)
-        util = pynvml.nvmlDeviceGetUtilizationRates(h).gpu          # %
-        mem  = pynvml.nvmlDeviceGetMemoryInfo(h)                    # bytes
-        temp = pynvml.nvmlDeviceGetTemperature(
-            h, pynvml.NVML_TEMPERATURE_GPU)
-        return (
-            "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
-            f"🎮 GPU: {util:.1f}%",
-            f"🗄️ VRAM: {mem.used/2**20:.0f} / {mem.total/2**20:.0f} MiB "
-            f"({mem.used/mem.total*100:.1f}%)",
-            f"🌡️ GPU Temp: {temp} °C"
-        )
-    except Exception:
-        pass  # переходим к следующему способу
-
-    # ── 2)
-    if shutil.which("nvidia-smi"):
-        try:
-            util, used, total, temp = map(float, re.split(r",\s*",
-                                                          subprocess.check_output(
-                                                              ["nvidia-smi",
-                                                               "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
-                                                               "--format=csv,noheader,nounits"],
-                                                              text=True, timeout=2
-                                                          ).strip()
-                                                          ))
-            return (
-                "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
-                f"🎮 GPU: {util:.1f}%",
-                f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB "
-                f"({used/total*100:.1f}%)",
-                f"🌡️ GPU Temp: {temp} °C"
-            )
-        except Exception:
-            pass
-    # 3) AMD через amdsmi --------------------------------------------------
-    try:
-        import amdsmi
-        amdsmi.amdsmi_init()
-        handles = amdsmi.amdsmi_get_processor_handles()
-        if handles:
-            h = handles[0]
-            util = amdsmi.amdsmi_get_gpu_activity(h)["gfx_activity"]
-            vram = amdsmi.amdsmi_get_gpu_vram_usage(h)
-            used = vram["vram_used"] / 2 ** 20
-            total = vram["vram_total"] / 2 ** 20
-            temp = amdsmi.amdsmi_get_temp_metric(
-                h,
-                amdsmi.AmdSmiTemperatureMetric.CURRENT,
-                amdsmi.AmdSmiTemperatureType.GPU_EDGE)["temperature"] / 1000
-            amdsmi.amdsmi_shut_down()
-            return (
-                "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
-                f"🎮 GPU: {util:.1f}%",
-                f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB ({used / total * 100:.1f}%)",
-                f"🌡️ GPU Temp: {temp:.0f} °C"
-            )
-    except Exception:
-        pass
-
-    # 4) AMD через CLI ------------------------------------------------------
-    if shutil.which("amd-smi"):
-        try:
-            out = subprocess.check_output(
-                ["amd-smi", "metric", "--json", "--gpu", "0"],
-                text=True, timeout=2,
-            )
-            import json, math
-            data = json.loads(out)["metric"][0]  # структура CLI
-            util = data["gfx_activity"]
-            used = data["vram_usage"]["used_vram_bytes"] / 2 ** 20
-            total = data["vram_usage"]["total_vram_bytes"] / 2 ** 20
-            temp = data["temperature"]["edge_current_temp"] / 1000
-            return (
-                "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
-                f"🎮 GPU: {util:.1f}%",
-                f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB ({used / total * 100:.1f}%)",
-                f"🌡️ GPU Temp: {temp:.0f} °C"
-            )
-        except Exception:
-            pass
-    if platform.system() == "Windows":
-
-        try:
-            import adlxpy  #
-            helper = adlxpy.ADLXHelper()
-            if helper.initialize():
-                system = helper.get_system()
-                gpu = system.get_gpus().at(0)
-                perf = system.get_performance_monitoring_services()
-                metrics = perf.get_gpu_metrics(gpu)
-
-                util = metrics.gpu_utilization()  # %
-                vram = metrics.vram_usage()  # bytes tuple
-                used = vram.vram_used() / 2 ** 20
-                total = vram.vram_total() / 2 ** 20
-                temp = metrics.gpu_temperatures().edge_current()  # °C
-
-                helper.terminate()
-                return ("*━━━━━━━━━━━GPU━━━━━━━━━━━*",
-                        f"🎮 GPU: {util}%",
-                        f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB "
-                        f"({used / total * 100:.1f}%)",
-                        f"🌡️ GPU Temp: {temp:.0f} °C")
-        except Exception:
-            pass
-
-        # 3-b-2) PyADL - запасной вариант
-        try:
-            from pyadl import ADLManager
-            devs = ADLManager.getInstance().getDevices()
-            if devs:
-                dev = devs[0]
-                util = dev.getCurrentUsage()  # %
-                temp = dev.getCurrentTemperature()  # °C
-
-                return ("*━━━━━━━━━━━GPU━━━━━━━━━━━*",
-                        f"🎮 GPU: {util}%",
-                        "🗄️ VRAM: n/a",
-                        f"🌡️ GPU Temp: {temp:.0f} °C")
-        except Exception:
-            pass
-
-    # ── 4) GPUtil
-    try:
-        import GPUtil
-        gpu = GPUtil.getGPUs()[0]
-        util = gpu.load * 100
-        used = gpu.memoryUsed
-        total = gpu.memoryTotal
-        temp = gpu.temperature
-        return (
-            "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
-            f"🎮 GPU: {util:.1f}%",
-            f"🗄️ VRAM: {used:.0f} / {total:.0f} MiB "
-            f"({used/total*100:.1f}%)",
-            f"🌡️ GPU Temp: {temp} °C"
-        )
-    except Exception:
-        return None     # не удалось
 def get_cpu_temp() -> str | None:
     # ── 1) стандартный psutil ─────────────────────────────
     try:
@@ -338,32 +178,187 @@ def get_cpu_temp() -> str | None:
                 continue
 
     return None
-def gather_status() -> str:
+def gather_gpu_metrics() -> dict | None:
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        h = pynvml.nvmlDeviceGetHandleByIndex(0)
+        util = pynvml.nvmlDeviceGetUtilizationRates(h).gpu
+        mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+        temp = pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU)
+        return {
+            "gpu": util,
+            "vram_used": mem.used / 2 ** 20,
+            "vram_total": mem.total / 2 ** 20,
+            "vram": mem.used / mem.total * 100 if mem.total else None,
+            "gpu_temp": float(temp),
+        }
+    except Exception:
+        pass
+
+    if shutil.which("nvidia-smi"):
+        try:
+            util, used, total, temp = map(
+                float,
+                re.split(
+                    r",\s*",
+                    subprocess.check_output(
+                        [
+                            "nvidia-smi",
+                            "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
+                            "--format=csv,noheader,nounits",
+                        ],
+                        text=True,
+                        timeout=2,
+                    ).strip(),
+                ),
+            )
+            return {
+                "gpu": util,
+                "vram_used": used,
+                "vram_total": total,
+                "vram": used / total * 100 if total else None,
+                "gpu_temp": temp,
+            }
+        except Exception:
+            pass
+
+    try:
+        import amdsmi
+        amdsmi.amdsmi_init()
+        handles = amdsmi.amdsmi_get_processor_handles()
+        if handles:
+            h = handles[0]
+            util = amdsmi.amdsmi_get_gpu_activity(h)["gfx_activity"]
+            vram = amdsmi.amdsmi_get_gpu_vram_usage(h)
+            used = vram["vram_used"] / 2 ** 20
+            total = vram["vram_total"] / 2 ** 20
+            temp = (
+                amdsmi.amdsmi_get_temp_metric(
+                    h,
+                    amdsmi.AmdSmiTemperatureMetric.CURRENT,
+                    amdsmi.AmdSmiTemperatureType.GPU_EDGE,
+                )["temperature"]
+                / 1000
+            )
+            amdsmi.amdsmi_shut_down()
+            return {
+                "gpu": util,
+                "vram_used": used,
+                "vram_total": total,
+                "vram": used / total * 100 if total else None,
+                "gpu_temp": temp,
+            }
+    except Exception:
+        pass
+
+    if shutil.which("amd-smi"):
+        try:
+            out = subprocess.check_output(
+                ["amd-smi", "metric", "--json", "--gpu", "0"],
+                text=True,
+                timeout=2,
+            )
+            import json
+
+            data = json.loads(out)["metric"][0]
+            util = data["gfx_activity"]
+            used = data["vram_usage"]["used_vram_bytes"] / 2 ** 20
+            total = data["vram_usage"]["total_vram_bytes"] / 2 ** 20
+            temp = data["temperature"]["edge_current_temp"] / 1000
+            return {
+                "gpu": util,
+                "vram_used": used,
+                "vram_total": total,
+                "vram": used / total * 100 if total else None,
+                "gpu_temp": temp,
+            }
+        except Exception:
+            pass
+
+    if platform.system() == "Windows":
+        try:
+            import adlxpy
+
+            helper = adlxpy.ADLXHelper()
+            if helper.initialize():
+                system = helper.get_system()
+                gpu = system.get_gpus().at(0)
+                perf = system.get_performance_monitoring_services()
+                metrics = perf.get_gpu_metrics(gpu)
+
+                util = metrics.gpu_utilization()
+                vram = metrics.vram_usage()
+                used = vram.vram_used() / 2 ** 20
+                total = vram.vram_total() / 2 ** 20
+                temp = metrics.gpu_temperatures().edge_current()
+
+                helper.terminate()
+                return {
+                    "gpu": util,
+                    "vram_used": used,
+                    "vram_total": total,
+                    "vram": used / total * 100 if total else None,
+                    "gpu_temp": temp,
+                }
+        except Exception:
+            pass
+
+        try:
+            from pyadl import ADLManager
+
+            devs = ADLManager.getInstance().getDevices()
+            if devs:
+                dev = devs[0]
+                util = dev.getCurrentUsage()
+                temp = dev.getCurrentTemperature()
+                return {"gpu": util, "gpu_temp": temp}
+        except Exception:
+            pass
+
+    try:
+        import GPUtil
+
+        gpu = GPUtil.getGPUs()[0]
+        util = gpu.load * 100
+        used = gpu.memoryUsed
+        total = gpu.memoryTotal
+        temp = gpu.temperature
+        return {
+            "gpu": util,
+            "vram_used": used,
+            "vram_total": total,
+            "vram": used / total * 100 if total else None,
+            "gpu_temp": temp,
+        }
+    except Exception:
+        return None
+
+def gather_metrics() -> dict:
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory()
     swap = psutil.swap_memory()
-    temp_val = get_cpu_temp()
-    temp = temp_val if temp_val is not None else "N/A"
+    cpu_temp = None
+    tmp = get_cpu_temp()
+    if tmp and tmp.split()[0].replace('.', '', 1).isdigit():
+        cpu_temp = float(tmp.split()[0])
+    uptime = int(time.time() - psutil.boot_time())
+    gpu_data = gather_gpu_metrics() or {}
+    disks = gather_disks_metrics()
+    return {
+        "cpu": cpu,
+        "ram": mem.percent,
+        "ram_used": mem.used,
+        "ram_total": mem.total,
+        "swap": swap.percent,
+        "swap_used": swap.used,
+        "swap_total": swap.total,
+        "cpu_temp": cpu_temp,
+        "uptime": uptime,
+        **gpu_data,
+        "disks": disks,
+    }
 
-    uptime = time.time() - psutil.boot_time()
-    lines = [
-        "💻 *PC stats*",
-        f"⏳ Uptime: {timedelta(seconds=int(uptime))}",
-        "*━━━━━━━━━━━CPU━━━━━━━━━━━*",
-        f"🖥️ CPU: {cpu:.1f}%",
-        f"🌡️ CPU Temp: {temp}",
-        "*━━━━━━━━━━━RAM━━━━━━━━━━━*",
-        f"🧠 RAM: {human_bytes(mem.used)} / {human_bytes(mem.total)} ({mem.percent:.1f}%)",
-        f"🧠 SWAP: {human_bytes(swap.used)} / {human_bytes(swap.total)} ({swap.percent:.1f}%)",
-
-    ]
-    gpu_lines = gather_gpu()
-    disk_lines = gather_disks()
-    if gpu_lines:
-        lines.extend(gpu_lines)
-    lines.extend(disk_lines)
-    return "\n".join(lines)
-def run_speedtest() -> tuple[float | None, float | None, float | None]:
 
     try:
         if speedtest:
@@ -391,13 +386,15 @@ speedtest_running = False      # флаг «тест уже идёт»
 
 def _speedtest_job():
     global speedtest_running
-    push_status("⏳ Тестируем скорость…")
+    push_text("⏳ Тестируем скорость…")
     dl, ul, ping = run_speedtest()
     if dl is not None:
-        push_status(f"💨 Speedtest:\n"
-                    f"↓ {dl:.1f} Mbit/s  ↑ {ul:.1f} Mbit/s  Ping {ping:.0f} ms")
+        push_text(
+            f"💨 Speedtest:\n"
+            f"↓ {dl:.1f} Mbit/s  ↑ {ul:.1f} Mbit/s  Ping {ping:.0f} ms"
+        )
     else:
-        push_status("⚠️  Speedtest не удался.")
+        push_text("⚠️  Speedtest не удался.")
     speedtest_running = False
 # ────── network layer: TLS TOFU + fingerprint pinning ────────────
 import ssl, socket, json, hashlib, pathlib, logging, requests
@@ -452,9 +449,17 @@ def _request(method: str, url: str, **kwargs):
 
     return resp
 
-def push_status(txt: str):
+def push_text(txt: str):
     try:
         r = _request("POST", f"{SERVER}/api/push/{SECRET}", json={"text": txt})
+        r.raise_for_status()
+    except Exception as e:
+        log.error("push error: %s", e)
+
+
+def push_metrics(data: dict):
+    try:
+        r = _request("POST", f"{SERVER}/api/push/{SECRET}", json=data)
         r.raise_for_status()
     except Exception as e:
         log.error("push error: %s", e)
@@ -492,12 +497,13 @@ def do_shutdown():
 
 log.info("Agent started → %s", SERVER)
 while True:
-    push_status(gather_status())
+    metrics = gather_metrics()
+    push_metrics(metrics)
     for c in pull_cmds():
         if c == "reboot":
-            log.info("cmd reboot"); push_status("⚡️ Rebooting…"); do_reboot()
+            log.info("cmd reboot"); push_text("⚡️ Rebooting…"); do_reboot()
         elif c == "shutdown":
-            log.info("cmd shutdown"); push_status("💤 Shutting down…"); do_shutdown()
+            log.info("cmd shutdown"); push_text("💤 Shutting down…"); do_shutdown()
         elif c == "speedtest":
             # запускаем тест в отдельном потоке, чтобы не блокировать основной цикл
             if not speedtest_running:
@@ -505,5 +511,5 @@ while True:
                 speedtest_running = True
                 threading.Thread(target=_speedtest_job, daemon=True).start()
             else:
-                push_status("🚧 Speedtest уже выполняется, дождитесь окончания.")
+                push_text("🚧 Speedtest уже выполняется, дождитесь окончания.")
     time.sleep(INTERVAL)
