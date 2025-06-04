@@ -395,10 +395,14 @@ def detect_gpu_vendor() -> str | None:
             except Exception:
                 pass
         try:
+            kwargs = {}
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             out = subprocess.check_output(
                 ["wmic", "path", "Win32_VideoController", "get", "Name"],
                 text=True,
                 timeout=2,
+                **kwargs,
             ).lower()
             if "nvidia" in out:
                 return "nvidia"
