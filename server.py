@@ -35,6 +35,7 @@ from telegram import (
     Update,
 )
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
@@ -1097,7 +1098,10 @@ def main():
     log.info("🌐 FastAPI on port %s", API_PORT)
 
     global TG_APP
-    TG_APP = ApplicationBuilder().token(TOKEN).build()
+    async def post_init(app: Application) -> None:
+        app.create_task(_purge_loop())
+
+    TG_APP = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     TG_APP.add_handler(CommandHandler(["start", "help"], cmd_start))
     TG_APP.add_handler(CommandHandler("newkey", cmd_newkey))
     TG_APP.add_handler(CommandHandler("linkkey", cmd_linkkey))
@@ -1112,7 +1116,6 @@ def main():
 
     # очищаем старые метрики и запускаем периодическую уборку
     purge_old_metrics()
-    TG_APP.create_task(_purge_loop())
 
     log.info("🤖 Polling…")
     TG_APP.run_polling(allowed_updates=["message", "callback_query"])
