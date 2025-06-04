@@ -69,9 +69,11 @@ python client.py
 ```
 
 ### 4. Interact through Telegram
-* `/status` – current CPU/RAM/disk usage  
-* `CPU` / `RAM` buttons – historical charts  
+* `/status` – current CPU/RAM/disk usage
+* `CPU` / `RAM` buttons – historical charts
 * `Reboot` / `Shutdown` – remote control actions
+* `/setalert <key|name> <metric> <threshold>` – configure alerts
+* `/delalert <key|name> <metric>` – remove alert
 
 ## Configuration
 
