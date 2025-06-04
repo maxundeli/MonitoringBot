@@ -383,6 +383,7 @@ def status_keyboard(secret: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("📈 RAM", callback_data=f"graph:ram:{secret}"),
                 InlineKeyboardButton("🎮 GPU",  callback_data=f"graph:gpu:{secret}"),
                 InlineKeyboardButton("🗄️ VRAM", callback_data=f"graph:vram:{secret}"),
+                InlineKeyboardButton("📡 Net", callback_data=f"graph:net:{secret}"),
             ],
             [InlineKeyboardButton("🏎️ Speedtest", callback_data=f"speedtest:{secret}")],
             [
@@ -765,6 +766,39 @@ def plot_metric(secret: str, metric: str, seconds: int):
     plt.close(fig)
     buf.seek(0)
     return buf
+
+def plot_net(secret: str, seconds: int):
+    rows = fetch_metrics(secret, int(time.time()) - seconds)
+    if not rows:
+        return None
+
+    ts = [datetime.fromtimestamp(r[0]) for r in rows]
+    up = [np.nan if r[5] is None else r[5] for r in rows]
+    down = [np.nan if r[6] is None else r[6] for r in rows]
+    segments, gaps, _ = _find_gaps(ts)
+
+    plt.style.use("dark_background")
+    fig, ax = _make_figure(seconds)
+
+    _plot_segments(ax, ts, up, segments, label="Up", linewidth=1.2)
+    _plot_segments(ax, ts, down, segments, label="Down", linewidth=1.2)
+
+    for g0, g1 in gaps:
+        ax.axvspan(g0, g1, facecolor="none", hatch="//", edgecolor="white", alpha=0.3, linewidth=0)
+
+    ax.set_title(f"Net за {timedelta(seconds=seconds)}")
+    ax.set_xlabel("Время")
+    ax.set_ylabel("B/s")
+    ax.grid(True, linestyle="--", linewidth=0.3)
+    ax.legend(loc="upper left", fontsize="small")
+    fig.autofmt_xdate()
+
+    buf = io.BytesIO()
+    plt.tight_layout()
+    fig.savefig(buf, dpi=fig.dpi, format="png")
+    plt.close(fig)
+    buf.seek(0)
+    return buf
 def plot_all_metrics(secret: str, seconds: int):
     rows = fetch_metrics(secret, int(time.time()) - seconds)
     if not rows:
@@ -959,6 +993,9 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if metric == "all":
             buf = plot_all_metrics(secret, seconds)
             caption = f"Все метрики за {timedelta(seconds=seconds)}"
+        elif metric == "net":
+            buf = plot_net(secret, seconds)
+            caption = f"NET за {timedelta(seconds=seconds)}"
         else:
             buf = plot_metric(secret, metric, seconds)
             caption = f"{metric.upper()} за {timedelta(seconds=seconds)}"
