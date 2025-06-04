@@ -440,10 +440,25 @@ def gather_gpu_metrics() -> dict | None:
             return data
     return None
 
+# ──────────────────────── network usage ─────────────────────────-
+NET_LAST = None
+
+def gather_net_usage():
+    global NET_LAST
+    cur = psutil.net_io_counters()
+    if NET_LAST is None:
+        NET_LAST = cur
+        return None, None
+    up = cur.bytes_sent - NET_LAST.bytes_sent
+    down = cur.bytes_recv - NET_LAST.bytes_recv
+    NET_LAST = cur
+    return up / INTERVAL, down / INTERVAL
+
 def gather_metrics() -> dict:
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory()
     swap = psutil.swap_memory()
+    net_up, net_down = gather_net_usage()
     cpu_temp = None
     tmp = get_cpu_temp()
     if tmp and tmp.split()[0].replace('.', '', 1).isdigit():
@@ -463,6 +478,8 @@ def gather_metrics() -> dict:
         "uptime": uptime,
         **gpu_data,
         "disks": disks,
+        "net_up": net_up,
+        "net_down": net_down,
     }
 
 
