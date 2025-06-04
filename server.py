@@ -211,7 +211,7 @@ def record_metric(secret: str, data: Dict[str, Any]):
                ram_used, ram_total, swap, swap_used, swap_total,
                vram_used, vram_total, cpu_temp, gpu_temp,
                net_up, net_down, uptime, disks
-           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             secret,
             int(time.time()),
