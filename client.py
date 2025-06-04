@@ -360,22 +360,24 @@ def gather_metrics() -> dict:
     }
 
 
+def run_speedtest() -> tuple[float | None, float | None, float | None]:
     try:
         if speedtest:
             st = speedtest.Speedtest(secure=True)
             st.get_best_server()
             dl = st.download() / 1e6
-            ul = st.upload()   / 1e6
+            ul = st.upload() / 1e6
             return dl, ul, st.results.ping
 
         import shutil, subprocess, json
+
         if shutil.which("speedtest"):
             out = subprocess.check_output(
                 ["speedtest", "--format=json"], text=True, timeout=120
             )
             data = json.loads(out)
             dl = data["download"]["bandwidth"] * 8 / 1e6
-            ul = data["upload"]["bandwidth"]  * 8 / 1e6
+            ul = data["upload"]["bandwidth"] * 8 / 1e6
             ping = data["ping"]["latency"]
             return dl, ul, ping
     except Exception as exc:
