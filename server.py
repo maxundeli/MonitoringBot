@@ -197,6 +197,12 @@ def _init_metric_db() -> sqlite3.Connection:
 
 sql = _init_metric_db()
 
+def purge_old_metrics(days: int = 30):
+    """Удалить метрики старше указанного количества дней."""
+    cutoff = int(time.time()) - days * 86400
+    cur = sql.execute("DELETE FROM metrics WHERE ts < ?", (cutoff,))
+    log.info("🧹 Purged %d old metric rows", cur.rowcount)
+
 def record_metric(secret: str, data: Dict[str, Any]):
     sql.execute(
         """INSERT INTO metrics(
@@ -256,6 +262,12 @@ def _avg_chunk(chunk: List[sqlite3.Row]) -> tuple[int, float | None, float | Non
     gpu = _avg([r[3] for r in chunk])
     vram = _avg([r[4] for r in chunk])
     return ts, cpu, ram, gpu, vram
+
+
+async def _purge_loop():
+    while True:
+        purge_old_metrics()
+        await asyncio.sleep(86400)
 
 
 async def maybe_send_alerts(secret: str, data: Dict[str, Any]):
@@ -1038,6 +1050,10 @@ def main():
     TG_APP.add_handler(CommandHandler("setalert", cmd_setalert))
     TG_APP.add_handler(CommandHandler("delalert", cmd_delalert))
     TG_APP.add_handler(CallbackQueryHandler(cb_action))
+
+    # очищаем старые метрики и запускаем периодическую уборку
+    purge_old_metrics()
+    TG_APP.create_task(_purge_loop())
 
     log.info("🤖 Polling…")
     TG_APP.run_polling(allowed_updates=["message", "callback_query"])
