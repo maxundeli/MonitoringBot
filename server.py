@@ -573,9 +573,13 @@ def _plot_segments(ax, ts, ys, segments, *args, **kwargs):
             kw["color"] = col
             ax.plot(ts[s:e+1], ys[s:e+1], *args, **kw)
 def _make_figure(seconds: int):
-    long_span = seconds >= 86_400  # ≥ 1 day
-    dpi = 500 if long_span else 150
-    fig, ax = plt.subplots(figsize=(12, 6), dpi=dpi)
+    """Return figure sized proportionally to the requested time span."""
+    days = seconds / 86_400
+    width = 12
+    if days >= 1:
+        width *= 1.5 if days < 1.5 else days
+    dpi = 500
+    fig, ax = plt.subplots(figsize=(width, 6), dpi=dpi)
 
     base = 9
     plt.rcParams.update({
