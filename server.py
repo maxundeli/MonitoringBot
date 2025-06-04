@@ -186,10 +186,17 @@ def _init_metric_db() -> sqlite3.Connection:
                vram_total REAL,
                cpu_temp   REAL,
                gpu_temp   REAL,
+               net_up     REAL,
+               net_down   REAL,
                uptime     INTEGER,
                disks      TEXT
         )"""
     )
+    cols = [r[1] for r in con.execute("PRAGMA table_info(metrics)")]
+    if "net_up" not in cols:
+        con.execute("ALTER TABLE metrics ADD COLUMN net_up REAL")
+    if "net_down" not in cols:
+        con.execute("ALTER TABLE metrics ADD COLUMN net_down REAL")
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_metrics_secret_ts ON metrics(secret, ts)"
     )
@@ -202,8 +209,9 @@ def record_metric(secret: str, data: Dict[str, Any]):
         """INSERT INTO metrics(
                secret, ts, cpu, ram, gpu, vram,
                ram_used, ram_total, swap, swap_used, swap_total,
-               vram_used, vram_total, cpu_temp, gpu_temp, uptime, disks
-           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               vram_used, vram_total, cpu_temp, gpu_temp,
+               net_up, net_down, uptime, disks
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             secret,
             int(time.time()),
@@ -220,6 +228,8 @@ def record_metric(secret: str, data: Dict[str, Any]):
             data.get("vram_total"),
             data.get("cpu_temp"),
             data.get("gpu_temp"),
+            data.get("net_up"),
+            data.get("net_down"),
             data.get("uptime"),
             json.dumps(data.get("disks")),
         ),
@@ -227,7 +237,7 @@ def record_metric(secret: str, data: Dict[str, Any]):
 
 def fetch_metrics(secret: str, since: int) -> List[tuple[int, float]]:
     rows = sql.execute(
-        "SELECT ts, cpu, ram, gpu, vram FROM metrics WHERE secret=? AND ts>=? ORDER BY ts ASC",
+        "SELECT ts, cpu, ram, gpu, vram, net_up, net_down FROM metrics WHERE secret=? AND ts>=? ORDER BY ts ASC",
         (secret, since),
     ).fetchall()
 
@@ -249,13 +259,15 @@ def _avg(val_list: List[float | None]) -> float | None:
     vals = [v for v in val_list if v is not None]
     return sum(vals) / len(vals) if vals else None
 
-def _avg_chunk(chunk: List[sqlite3.Row]) -> tuple[int, float | None, float | None, float | None, float | None]:
+def _avg_chunk(chunk: List[sqlite3.Row]) -> tuple[int, float | None, float | None, float | None, float | None, float | None, float | None]:
     ts = chunk[-1][0]
     cpu = _avg([r[1] for r in chunk])
     ram = _avg([r[2] for r in chunk])
     gpu = _avg([r[3] for r in chunk])
     vram = _avg([r[4] for r in chunk])
-    return ts, cpu, ram, gpu, vram
+    up = _avg([r[5] for r in chunk])
+    down = _avg([r[6] for r in chunk])
+    return ts, cpu, ram, gpu, vram, up, down
 
 
 async def maybe_send_alerts(secret: str, data: Dict[str, Any]):
@@ -329,6 +341,10 @@ def format_status(row: sqlite3.Row) -> str:
         f"🧠 RAM: {human_bytes(row['ram_used'])} / {human_bytes(row['ram_total'])} ({row['ram']:.1f}%)",
         f"🧠 SWAP: {human_bytes(row['swap_used'])} / {human_bytes(row['swap_total'])} ({row['swap']:.1f}%)",
     ]
+    if row['net_up'] is not None and row['net_down'] is not None:
+        lines.append(
+            f"📡 Net: ↑ {human_bytes(row['net_up'])}/s ↓ {human_bytes(row['net_down'])}/s"
+        )
     if row['gpu'] is not None:
         lines.extend([
             "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
@@ -715,12 +731,14 @@ def plot_metric(secret: str, metric: str, seconds: int):
     ts = [datetime.fromtimestamp(r[0]) for r in rows]
 
     idx_map = {
-        "cpu": (1, "CPU %"),
-        "ram": (2, "RAM %"),
-        "gpu": (3, "GPU %"),
-        "vram": (4, "VRAM %"),
+        "cpu": (1, "CPU %", "%", (0, 100)),
+        "ram": (2, "RAM %", "%", (0, 100)),
+        "gpu": (3, "GPU %", "%", (0, 100)),
+        "vram": (4, "VRAM %", "%", (0, 100)),
+        "net_up": (5, "Net Up", "B/s", None),
+        "net_down": (6, "Net Down", "B/s", None),
     }
-    col_idx, label = idx_map[metric]
+    col_idx, label, ylab, ylim = idx_map[metric]
     ys = [np.nan if rows[i][col_idx] is None else rows[i][col_idx] for i in range(len(rows))]
 
     segments, gaps, _ = _find_gaps(ts)
@@ -735,8 +753,9 @@ def plot_metric(secret: str, metric: str, seconds: int):
 
     ax.set_title(f"{label} за {timedelta(seconds=seconds)}")
     ax.set_xlabel("Время")
-    ax.set_ylabel("%")
-    ax.set_ylim(0, 100)
+    ax.set_ylabel(ylab)
+    if ylim:
+        ax.set_ylim(*ylim)
     ax.grid(True, linestyle="--", linewidth=0.3)
     fig.autofmt_xdate()
 
@@ -980,6 +999,8 @@ class PushPayload(BaseModel):
     vram_total: float | None = None
     cpu_temp: float | None = None
     gpu_temp: float | None = None
+    net_up: float | None = None
+    net_down: float | None = None
     uptime: int | None = None
     disks: list[dict] | None = None
     text: str | None = None
