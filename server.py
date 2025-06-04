@@ -275,7 +275,8 @@ OWNER_HELP = (
     "/set <ключ> – сделать активным.\n"
     "/list – показать ключи.\n"
     "/status – статус + кнопки.\n"
-    "/renamekey <ключ> <имя> – переименовать."
+    "/renamekey <ключ> <имя> – переименовать.\n"
+    "/delkey <ключ/имя> – удалить."
 )
 def gen_secret(n: int = 20):
     return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
@@ -345,11 +346,30 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Я бот-монитор.\n" + OWNER_HELP)
 
 async def cmd_newkey(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    name = " ".join(ctx.args)[:30] if ctx.args else "PC"
     db = load_db()
+    uid = update.effective_user.id
+    if ctx.args:
+        name = " ".join(ctx.args)[:30]
+        # проверяем уникальность имени
+        for e in db["secrets"].values():
+            if is_owner(e, uid) and e.get("nickname") == name:
+                return await update.message.reply_text("❌ Имя уже занято.")
+    else:
+        base = "key"
+        nums = []
+        for e in db["secrets"].values():
+            if is_owner(e, uid) and (n := e.get("nickname")) and n.startswith(base):
+                tail = n[len(base):]
+                if tail.isdigit():
+                    nums.append(int(tail))
+        num = 1
+        while num in nums:
+            num += 1
+        name = f"{base}{num}"
+
     secret = gen_secret()
     db["secrets"][secret] = {
-        "owners": [update.effective_user.id],
+        "owners": [uid],
         "nickname": name,
         "pending": [],
     }
@@ -465,9 +485,43 @@ async def cmd_renamekey(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     entry = db["secrets"].get(secret)
     if not entry or not is_owner(entry, update.effective_user.id):
         return await update.message.reply_text("🚫 Нет доступа.")
+    uid = update.effective_user.id
+    for s, e in db["secrets"].items():
+        if s != secret and is_owner(e, uid) and e.get("nickname") == new_name:
+            return await update.message.reply_text("❌ Имя уже занято.")
     entry["nickname"] = new_name
     save_db(db)
     await update.message.reply_text(f"✅ `{secret}` → {new_name}", parse_mode="Markdown")
+
+async def cmd_delkey(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        return await update.message.reply_text("Синтаксис: /delkey <ключ или имя>")
+    arg = " ".join(ctx.args).strip()
+    db = load_db()
+    uid = update.effective_user.id
+
+    # аргумент может быть полным ключом
+    entry = db["secrets"].get(arg)
+    if entry:
+        if not is_owner(entry, uid):
+            return await update.message.reply_text("🚫 Нет доступа.")
+        secret = arg
+    else:
+        matches = [s for s, e in db["secrets"].items() if is_owner(e, uid) and e.get("nickname") == arg]
+        if not matches:
+            return await update.message.reply_text("Ключ не найден.")
+        if len(matches) > 1:
+            return await update.message.reply_text("Несколько ключей с таким именем. Укажи полный ключ.")
+        secret = matches[0]
+
+    db["secrets"].pop(secret, None)
+    for chat, s in list(db["active"].items()):
+        if s == secret:
+            db["active"].pop(chat)
+    save_db(db)
+    sql.execute("DELETE FROM metrics WHERE secret=?", (secret,))
+    LATEST_TEXT.pop(secret, None)
+    await update.message.reply_text(f"🗑️ Удалён ключ {secret}")
 
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     secret = resolve_secret(update, ctx)
@@ -858,6 +912,7 @@ def main():
     app_tg.add_handler(CommandHandler("list", cmd_list))
     app_tg.add_handler(CommandHandler("status", cmd_status))
     app_tg.add_handler(CommandHandler("renamekey", cmd_renamekey))
+    app_tg.add_handler(CommandHandler("delkey", cmd_delkey))
     app_tg.add_handler(CallbackQueryHandler(cb_action))
 
     log.info("🤖 Polling…")
