@@ -342,9 +342,10 @@ def format_status(row: sqlite3.Row) -> str:
         f"🧠 SWAP: {human_bytes(row['swap_used'])} / {human_bytes(row['swap_total'])} ({row['swap']:.1f}%)",
     ]
     if row['net_up'] is not None and row['net_down'] is not None:
-        lines.append(
-            f"📡 Net: ↑ {human_bytes(row['net_up'])}/s ↓ {human_bytes(row['net_down'])}/s"
-        )
+        lines.extend([
+            "*━━━━━━━━━━━NET━━━━━━━━━━━*",
+            f"📡 Net: ↑ {human_bytes(row['net_up'])}/s ↓ {human_bytes(row['net_down'])}/s",
+        ])
     if row['gpu'] is not None:
         lines.extend([
             "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
