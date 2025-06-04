@@ -17,8 +17,6 @@ from telegram import InputFile
 import subprocess
 import sys
 import threading
-import time
-from collections import defaultdict
 from pathlib import Path
 import numpy as np
 from statistics import median
@@ -48,11 +46,9 @@ ENV_FILE = Path(".env")
 DB_FILE = Path("db.json")
 METRIC_DB = Path("metrics.sqlite")
 API_PORT = int(os.getenv("PORT", "8000"))
-SUM_CPU = defaultdict(float)
-SUM_RAM = defaultdict(float)
-SUM_GPU = defaultdict(float)
-SUM_VRAM = defaultdict(float)
-COUNTERS = defaultdict(int)
+
+# последний текстовый статус от клиентов (speedtest и пр.)
+LATEST_TEXT: Dict[str, str] = {}
 
 CERT_FILE = Path(os.getenv("SSL_CERT", "cert.pem"))
 KEY_FILE = Path(os.getenv("SSL_KEY", "key.pem"))
@@ -61,12 +57,6 @@ KEY_FILE = Path(os.getenv("SSL_KEY", "key.pem"))
 matplotlib.use("Agg")
 
 # ────────────────────────── helpers ────────────────────────────────────────
-CPU_RE = re.compile(r"CPU:\s*([\d.]+)%")
-RAM_RE = re.compile(r"RAM:.*\(([\d.]+)%\)")
-GPU_RE  = re.compile(r"GPU:\s*([\d.]+)%")
-VRAM_RE = re.compile(r"VRAM:.*\(([\d.]+)%\)")
-UPTIME_RE = re.compile(r"Uptime:\s*([^\n]+)")
-COUNTERS: defaultdict[str, int] = defaultdict(int)
 
 def _load_dotenv() -> None:
     if not ENV_FILE.exists():
@@ -123,6 +113,19 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("remote-bot")
+
+UNIT_NAMES = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+
+def human_bytes(num: float) -> str:
+    for unit in UNIT_NAMES:
+        if num < 1024:
+            return f"{num:.1f} {unit}"
+        num /= 1024
+    return f"{num:.1f} EiB"
+
+def disk_bar(p: float, length: int = 10) -> str:
+    filled = int(round(p * length / 100))
+    return "█" * filled + "░" * (length - filled)
 async def check_speedtest_done(ctx: ContextTypes.DEFAULT_TYPE):
     job  = ctx.job
     data = job.data
@@ -136,7 +139,7 @@ async def check_speedtest_done(ctx: ContextTypes.DEFAULT_TYPE):
     if "speedtest" in entry.get("pending", []):
         return
 
-    status: str = entry.get("status") or ""
+    status: str = LATEST_TEXT.get(secret, "")
     if "Speedtest" not in status:
 
         start_ts = data.setdefault("start_ts", time.time())
@@ -162,6 +165,7 @@ async def check_speedtest_done(ctx: ContextTypes.DEFAULT_TYPE):
 # ───────────────────── SQLite helpers ──────────────────────────────────────
 def _init_metric_db() -> sqlite3.Connection:
     con = sqlite3.connect(METRIC_DB, check_same_thread=False, isolation_level=None)
+    con.row_factory = sqlite3.Row
     con.execute(
         """CREATE TABLE IF NOT EXISTS metrics(
                secret TEXT,
@@ -169,7 +173,18 @@ def _init_metric_db() -> sqlite3.Connection:
                cpu    REAL,
                ram    REAL,
                gpu    REAL,
-               vram   REAL
+               vram   REAL,
+               ram_used   REAL,
+               ram_total  REAL,
+               swap       REAL,
+               swap_used  REAL,
+               swap_total REAL,
+               vram_used  REAL,
+               vram_total REAL,
+               cpu_temp   REAL,
+               gpu_temp   REAL,
+               uptime     INTEGER,
+               disks      TEXT
         )"""
     )
     con.execute(
@@ -179,11 +194,32 @@ def _init_metric_db() -> sqlite3.Connection:
 
 sql = _init_metric_db()
 
-def record_metric(secret: str, cpu: float, ram: float,
-                  gpu: float | None, vram: float | None):
+def record_metric(secret: str, data: Dict[str, Any]):
     sql.execute(
-        "INSERT INTO metrics(secret, ts, cpu, ram, gpu, vram) VALUES(?,?,?,?,?,?)",
-        (secret, int(time.time()), cpu, ram, gpu, vram),
+        """INSERT INTO metrics(
+               secret, ts, cpu, ram, gpu, vram,
+               ram_used, ram_total, swap, swap_used, swap_total,
+               vram_used, vram_total, cpu_temp, gpu_temp, uptime, disks
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            secret,
+            int(time.time()),
+            data.get("cpu"),
+            data.get("ram"),
+            data.get("gpu"),
+            data.get("vram"),
+            data.get("ram_used"),
+            data.get("ram_total"),
+            data.get("swap"),
+            data.get("swap_used"),
+            data.get("swap_total"),
+            data.get("vram_used"),
+            data.get("vram_total"),
+            data.get("cpu_temp"),
+            data.get("gpu_temp"),
+            data.get("uptime"),
+            json.dumps(data.get("disks")),
+        ),
     )
 
 def fetch_metrics(secret: str, since: int) -> List[tuple[int, float]]:
@@ -191,7 +227,32 @@ def fetch_metrics(secret: str, since: int) -> List[tuple[int, float]]:
         "SELECT ts, cpu, ram, gpu, vram FROM metrics WHERE secret=? AND ts>=? ORDER BY ts ASC",
         (secret, since),
     ).fetchall()
-    return rows
+
+    if not rows:
+        return []
+
+    grouped = []
+    chunk: list[sqlite3.Row] = []
+    for r in rows:
+        chunk.append(r)
+        if len(chunk) == 6:
+            grouped.append(_avg_chunk(chunk))
+            chunk = []
+    if chunk:
+        grouped.append(_avg_chunk(chunk))
+    return grouped
+
+def _avg(val_list: List[float | None]) -> float | None:
+    vals = [v for v in val_list if v is not None]
+    return sum(vals) / len(vals) if vals else None
+
+def _avg_chunk(chunk: List[sqlite3.Row]) -> tuple[int, float | None, float | None, float | None, float | None]:
+    ts = chunk[-1][0]
+    cpu = _avg([r[1] for r in chunk])
+    ram = _avg([r[2] for r in chunk])
+    gpu = _avg([r[3] for r in chunk])
+    vram = _avg([r[4] for r in chunk])
+    return ts, cpu, ram, gpu, vram
 
 # ──────────────────────── JSON DB helpers ──────────────────────────────────
 def load_db() -> Dict[str, Any]:
@@ -221,6 +282,42 @@ def gen_secret(n: int = 20):
 
 def is_owner(entry: Dict[str, Any], user_id: int) -> bool:
     return user_id in entry.get("owners", [])
+
+def format_status(row: sqlite3.Row) -> str:
+    lines = [
+        "💻 *PC stats*",
+        f"⏳ Uptime: {timedelta(seconds=int(row['uptime'] or 0))}",
+        "*━━━━━━━━━━━CPU━━━━━━━━━━━*",
+        f"🖥️ CPU: {row['cpu']:.1f}%",
+        f"🌡️ CPU Temp: {row['cpu_temp']:.1f} °C" if row['cpu_temp'] is not None else "🌡️ CPU Temp: N/A",
+        "*━━━━━━━━━━━RAM━━━━━━━━━━━*",
+        f"🧠 RAM: {human_bytes(row['ram_used'])} / {human_bytes(row['ram_total'])} ({row['ram']:.1f}%)",
+        f"🧠 SWAP: {human_bytes(row['swap_used'])} / {human_bytes(row['swap_total'])} ({row['swap']:.1f}%)",
+    ]
+    if row['gpu'] is not None:
+        lines.extend([
+            "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
+            f"🎮 GPU: {row['gpu']:.1f}%",
+        ])
+        if row['vram_used'] is not None:
+            lines.append(
+                f"🗄️ VRAM: {row['vram_used']:.0f} / {row['vram_total']:.0f} MiB ({row['vram']:.1f}%)"
+            )
+        if row['gpu_temp'] is not None:
+            lines.append(f"🌡️ GPU Temp: {row['gpu_temp']:.0f} °C")
+
+    disks = json.loads(row['disks']) if row['disks'] else []
+    if disks:
+        lines.append("*━━━━━━━━━━━DISKS━━━━━━━━━━*")
+        for d in disks:
+            line = (
+                f"💾 {d['mount']}: {disk_bar(d['percent'])} "
+                f"{d['percent']:.0f}% ({human_bytes(d['used'])} / {human_bytes(d['total'])})"
+            )
+            if d['percent'] >= 90:
+                line += "❗"
+            lines.append(line)
+    return "\n".join(lines)
 
 # ───────────────────────- UI helpers ───────────────────────────────────────
 def status_keyboard(secret: str) -> InlineKeyboardMarkup:
@@ -254,7 +351,6 @@ async def cmd_newkey(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     db["secrets"][secret] = {
         "owners": [update.effective_user.id],
         "nickname": name,
-        "status": None,
         "pending": [],
     }
     db["active"][str(update.effective_chat.id)] = secret
@@ -317,10 +413,13 @@ async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             info  = "нет данных"
 
         uptime = "-"
-        if entry.get("status"):
-            m = UPTIME_RE.search(entry["status"])
-            if m:
-                uptime = m.group(1)
+        if row:
+            up = sql.execute(
+                "SELECT uptime FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
+                (secret,),
+            ).fetchone()
+            if up and up[0] is not None:
+                uptime = str(timedelta(seconds=int(up[0])))
 
         marker = " <b>❗️ДАННЫЕ УСТАРЕЛИ❗</b>" if not fresh else ""
         rows.append(
@@ -374,11 +473,14 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     secret = resolve_secret(update, ctx)
     if not secret:
         return await update.message.reply_text("Нет доступа или активного ключа.")
-    entry = load_db()["secrets"].get(secret)
-    if not entry or not entry["status"]:
+    row = sql.execute(
+        "SELECT * FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
+        (secret,),
+    ).fetchone()
+    if not row:
         return await update.message.reply_text("Нет данных от агента.")
     await update.message.reply_text(
-        entry["status"], parse_mode="Markdown", reply_markup=status_keyboard(secret)
+        format_status(row), parse_mode="Markdown", reply_markup=status_keyboard(secret)
     )
 
 # ───────────────────- Plot helpers ─────────────────────────────────────────
@@ -529,10 +631,14 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         entry = db["secrets"].get(secret)
         if not entry or not is_owner(entry, q.from_user.id):
             return await q.edit_message_text("🚫 Нет доступа.")
-        if not entry["status"]:
+        row = sql.execute(
+            "SELECT * FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
+            (secret,),
+        ).fetchone()
+        if not row:
             return await q.edit_message_text("Нет данных от агента.")
         return await q.edit_message_text(
-            entry["status"], parse_mode="Markdown", reply_markup=status_keyboard(secret)
+            format_status(row), parse_mode="Markdown", reply_markup=status_keyboard(secret)
         )
     if action in {"reboot", "shutdown"}:
         secret = parts[1]
@@ -568,10 +674,12 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 info = "нет данных"
 
             uptime = "-"
-            if entry.get("status"):
-                m = UPTIME_RE.search(entry["status"])
-                if m:
-                    uptime = m.group(1)
+            up = sql.execute(
+                "SELECT uptime FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
+                (secret,),
+            ).fetchone()
+            if up and up[0] is not None:
+                uptime = str(timedelta(seconds=int(up[0])))
 
             marker = " <b>❗️ДАННЫЕ УСТАРЕЛИ❗</b>" if not fresh else ""
             rows.append(
@@ -684,64 +792,37 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ────────────────────────── FastAPI for agents ─────────────────────────────
 app = FastAPI()
 
-class StatusPayload(BaseModel):
-    text: str
+class PushPayload(BaseModel):
+    cpu: float | None = None
+    ram: float | None = None
+    ram_used: float | None = None
+    ram_total: float | None = None
+    swap: float | None = None
+    swap_used: float | None = None
+    swap_total: float | None = None
+    gpu: float | None = None
+    vram: float | None = None
+    vram_used: float | None = None
+    vram_total: float | None = None
+    cpu_temp: float | None = None
+    gpu_temp: float | None = None
+    uptime: int | None = None
+    disks: list[dict] | None = None
+    text: str | None = None
 
 @app.post("/api/push/{secret}")
-async def push(secret: str, payload: StatusPayload):
+async def push(secret: str, payload: PushPayload):
     db = load_db()
     if secret not in db["secrets"]:
         raise HTTPException(404)
 
-    # Сохраняем последний статус для /status в Telegram-боте
-    db["secrets"][secret]["status"] = payload.text
-    save_db(db)
+    if payload.text:
+        LATEST_TEXT[secret] = payload.text
 
-    # ───── парсинг чисел ─────
-    cpu_m  = CPU_RE.search(payload.text)
-    ram_m  = RAM_RE.search(payload.text)
-    gpu_m  = GPU_RE.search(payload.text)
-    vram_m = VRAM_RE.search(payload.text)
-
-    # CPU и RAM считаем обязательными: если их нет — просто выходим
-    if not (cpu_m and ram_m):
+    if payload.cpu is None or payload.ram is None:
         return {"ok": True}
 
-    try:
-        cpu_val  = float(cpu_m.group(1))
-        ram_val  = float(ram_m.group(1))
-        gpu_val  = float(gpu_m.group(1)) if gpu_m else None
-        vram_val = float(vram_m.group(1)) if vram_m else None
-    except ValueError:
-        # Невалидные числа — игнорируем этот пуш
-        return {"ok": True}
-
-    # ───── аккумуляторы ─────
-    SUM_CPU[secret]  += cpu_val
-    SUM_RAM[secret]  += ram_val
-    SUM_GPU[secret]  += gpu_val  if gpu_val  is not None else 0.0
-    SUM_VRAM[secret] += vram_val if vram_val is not None else 0.0
-    COUNTERS[secret] += 1
-
-    # Каждые 6 пушей (примерно 1 минута при шаге 10 с) пишем усреднённое
-    if COUNTERS[secret] >= 6:
-        avg_cpu  = SUM_CPU[secret]  / COUNTERS[secret]
-        avg_ram  = SUM_RAM[secret]  / COUNTERS[secret]
-        avg_gpu  = (
-            SUM_GPU[secret] / COUNTERS[secret] if gpu_m else None
-        )
-        avg_vram = (
-            SUM_VRAM[secret] / COUNTERS[secret] if vram_m else None
-        )
-
-        record_metric(secret, avg_cpu, avg_ram, avg_gpu, avg_vram)
-
-        # сбрасываем счётчики
-        SUM_CPU[secret]  = 0.0
-        SUM_RAM[secret]  = 0.0
-        SUM_GPU[secret]  = 0.0
-        SUM_VRAM[secret] = 0.0
-        COUNTERS[secret] = 0
+    record_metric(secret, payload.model_dump())
 
     return {"ok": True}
 
