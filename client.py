@@ -443,15 +443,35 @@ def gather_gpu_metrics() -> dict | None:
 # ──────────────────────── network usage ─────────────────────────-
 NET_LAST = None
 
+# список подстрок в названиях сетевых интерфейсов, которые надо игнорировать
+# (по умолчанию исключаем loopback и типичные VPN/TUN адаптеры)
+NET_IGNORE = [s.strip().lower() for s in os.getenv(
+    "AGENT_NET_IGNORE",
+    "lo,loopback,tun,tap,wg,tailscale"
+).split(',') if s.strip()]
+
+def _should_skip(name: str) -> bool:
+    name_l = name.lower()
+    return any(sub in name_l for sub in NET_IGNORE)
+
 def gather_net_usage():
+    """Посчитать сетевую скорость, исключив виртуальные интерфейсы."""
     global NET_LAST
-    cur = psutil.net_io_counters()
+    cur = psutil.net_io_counters(pernic=True)
     if NET_LAST is None:
         NET_LAST = cur
         return None, None
-    up = cur.bytes_sent - NET_LAST.bytes_sent
-    down = cur.bytes_recv - NET_LAST.bytes_recv
+    up = down = 0
+    for name, stats in cur.items():
+        if _should_skip(name):
+            continue
+        last = NET_LAST.get(name)
+        if not last:
+            continue
+        up += stats.bytes_sent - last.bytes_sent
+        down += stats.bytes_recv - last.bytes_recv
     NET_LAST = cur
+    # даже если трафика нет, возвращаем 0, а не None
     return up / INTERVAL, down / INTERVAL
 
 def gather_metrics() -> dict:
