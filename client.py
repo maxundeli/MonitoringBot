@@ -178,7 +178,8 @@ def get_cpu_temp() -> str | None:
                 continue
 
     return None
-def gather_gpu_metrics() -> dict | None:
+def _nvidia_gpu_metrics() -> dict | None:
+    """Try reading metrics using NVIDIA-specific tools."""
     try:
         import pynvml
         pynvml.nvmlInit()
@@ -223,6 +224,57 @@ def gather_gpu_metrics() -> dict | None:
         except Exception:
             pass
 
+    try:
+        import GPUtil
+
+        gpu = GPUtil.getGPUs()[0]
+        util = gpu.load * 100
+        used = gpu.memoryUsed
+        total = gpu.memoryTotal
+        temp = gpu.temperature
+        return {
+            "gpu": util,
+            "vram_used": used,
+            "vram_total": total,
+            "vram": used / total * 100 if total else None,
+            "gpu_temp": temp,
+        }
+    except Exception:
+        return None
+
+
+def _windows_wmi_amd_metrics() -> dict | None:
+    """Fallback metrics via Windows WMI performance counters."""
+    if platform.system() != "Windows" or not wmi:
+        return None
+    try:
+        c = wmi.WMI(namespace="root\\CIMV2")
+        mems = c.Win32_PerfFormattedData_GPUPerformanceCounters_GPUMemory()
+        engines = c.Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine()
+        used = total = util = None
+        if mems:
+            used = float(mems[0].DedicatedUsage)
+            total = float(mems[0].DedicatedLimit)
+        if engines:
+            vals = [int(e.UtilizationPercentage) for e in engines if "engtype_3d" in e.Name.lower()]
+            if vals:
+                util = sum(vals) / len(vals)
+        data = {}
+        if util is not None:
+            data["gpu"] = util
+        if used is not None:
+            data["vram_used"] = used
+        if total is not None:
+            data["vram_total"] = total
+            if used is not None:
+                data["vram"] = used / total * 100 if total else None
+        return data or None
+    except Exception:
+        return None
+
+
+def _amd_gpu_metrics() -> dict | None:
+    """Try reading metrics using AMD-specific tools."""
     try:
         import amdsmi
         amdsmi.amdsmi_init()
@@ -277,6 +329,10 @@ def gather_gpu_metrics() -> dict | None:
             pass
 
     if platform.system() == "Windows":
+        data = _windows_wmi_amd_metrics()
+        if data:
+            return data
+
         try:
             import adlxpy
 
@@ -316,23 +372,69 @@ def gather_gpu_metrics() -> dict | None:
         except Exception:
             pass
 
-    try:
-        import GPUtil
+    return None
 
-        gpu = GPUtil.getGPUs()[0]
-        util = gpu.load * 100
-        used = gpu.memoryUsed
-        total = gpu.memoryTotal
-        temp = gpu.temperature
-        return {
-            "gpu": util,
-            "vram_used": used,
-            "vram_total": total,
-            "vram": used / total * 100 if total else None,
-            "gpu_temp": temp,
-        }
-    except Exception:
-        return None
+
+def detect_gpu_vendor() -> str | None:
+    """Return 'nvidia', 'amd' or None if unknown."""
+    if platform.system() == "Windows":
+        if wmi:
+            try:
+                c = wmi.WMI()
+                for gpu in c.Win32_VideoController():
+                    name = (gpu.Name or "").lower()
+                    vendor = (gpu.AdapterCompatibility or "").lower()
+                    if "nvidia" in name or "nvidia" in vendor:
+                        return "nvidia"
+                    if (
+                        "amd" in name
+                        or "radeon" in name
+                        or "advanced micro devices" in vendor
+                    ):
+                        return "amd"
+            except Exception:
+                pass
+        try:
+            out = subprocess.check_output(
+                ["wmic", "path", "Win32_VideoController", "get", "Name"],
+                text=True,
+                timeout=2,
+            ).lower()
+            if "nvidia" in out:
+                return "nvidia"
+            if "amd" in out or "radeon" in out:
+                return "amd"
+        except Exception:
+            pass
+    else:
+        try:
+            if shutil.which("lspci"):
+                out = subprocess.check_output(["lspci", "-nn"], text=True)
+                for line in out.splitlines():
+                    if " VGA " in line or "3d controller" in line.lower():
+                        ll = line.lower()
+                        if "nvidia" in ll:
+                            return "nvidia"
+                        if "amd" in ll or "radeon" in ll or "advanced micro devices" in ll:
+                            return "amd"
+        except Exception:
+            pass
+    return None
+
+
+def gather_gpu_metrics() -> dict | None:
+    vendor = detect_gpu_vendor()
+    if vendor == "nvidia":
+        return _nvidia_gpu_metrics()
+    if vendor == "amd":
+        return _amd_gpu_metrics()
+
+    # неизвестно – пробуем всё подряд
+    for fn in (_nvidia_gpu_metrics, _amd_gpu_metrics):
+        data = fn()
+        if data:
+            return data
+    return None
 
 def gather_metrics() -> dict:
     cpu = psutil.cpu_percent(interval=1)
