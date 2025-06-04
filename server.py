@@ -50,6 +50,9 @@ API_PORT = int(os.getenv("PORT", "8000"))
 # последний текстовый статус от клиентов (speedtest и пр.)
 LATEST_TEXT: Dict[str, str] = {}
 
+# ссылка на экземпляр Telegram-приложения для отправки уведомлений
+TG_APP = None
+
 CERT_FILE = Path(os.getenv("SSL_CERT", "cert.pem"))
 KEY_FILE = Path(os.getenv("SSL_KEY", "key.pem"))
 
@@ -254,6 +257,33 @@ def _avg_chunk(chunk: List[sqlite3.Row]) -> tuple[int, float | None, float | Non
     vram = _avg([r[4] for r in chunk])
     return ts, cpu, ram, gpu, vram
 
+
+async def maybe_send_alerts(secret: str, data: Dict[str, Any]):
+    """Check alert thresholds and notify owners if exceeded."""
+    db = load_db()
+    alerts = db.get("alerts", {})
+    changed = False
+    for uid, secrets_cfg in alerts.items():
+        cfg = secrets_cfg.get(secret)
+        if not cfg:
+            continue
+        for metric, thr in cfg.items():
+            val = data.get(metric)
+            if val is None:
+                continue
+            if val >= thr:
+                key = f"{uid}:{secret}:{metric}"
+                last = db.get("alert_last", {}).get(key, 0)
+                if time.time() - last >= 300:
+                    name = db.get("secrets", {}).get(secret, {}).get("nickname", secret)
+                    msg = f"⚠️ {name}: {metric.upper()} {val:.1f}% ≥ {thr}%"
+                    if TG_APP:
+                        TG_APP.create_task(TG_APP.bot.send_message(chat_id=int(uid), text=msg))
+                    db.setdefault("alert_last", {})[key] = time.time()
+                    changed = True
+    if changed:
+        save_db(db)
+
 # ──────────────────────── JSON DB helpers ──────────────────────────────────
 def load_db() -> Dict[str, Any]:
     if DB_FILE.exists():
@@ -262,6 +292,8 @@ def load_db() -> Dict[str, Any]:
         data = {}
     data.setdefault("secrets", {})
     data.setdefault("active", {})
+    data.setdefault("alerts", {})
+    data.setdefault("alert_last", {})
     return data
 
 def save_db(db: Dict[str, Any]):
@@ -276,7 +308,9 @@ OWNER_HELP = (
     "/list – показать ключи.\n"
     "/status – статус + кнопки.\n"
     "/renamekey <ключ> <имя> – переименовать.\n"
-    "/delkey <ключ/имя> – удалить."
+    "/delkey <ключ/имя> – удалить.\n"
+    "/setalert <ключ/имя> <метрика> <порог> – настроить алерт.\n"
+    "/delalert <ключ/имя> <метрика> – удалить алерт."
 )
 def gen_secret(n: int = 20):
     return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
@@ -536,6 +570,88 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         format_status(row), parse_mode="Markdown", reply_markup=status_keyboard(secret)
     )
+
+async def cmd_setalert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if len(ctx.args) != 3:
+        return await update.message.reply_text(
+            "Синтаксис: /setalert <ключ/имя> <метрика> <порог>"
+        )
+
+    key, metric, thr = ctx.args
+    metric = metric.lower()
+    if metric not in {"cpu", "ram", "gpu", "vram"}:
+        return await update.message.reply_text("Неизвестная метрика.")
+    try:
+        threshold = float(thr)
+    except ValueError:
+        return await update.message.reply_text("Порог должен быть числом.")
+
+    db = load_db()
+    uid = str(update.effective_user.id)
+
+    secret = None
+    entry = db["secrets"].get(key)
+    if entry and is_owner(entry, update.effective_user.id):
+        secret = key
+    else:
+        for s, e in db["secrets"].items():
+            if is_owner(e, update.effective_user.id) and e.get("nickname") == key:
+                secret = s
+                break
+    if not secret:
+        return await update.message.reply_text("Ключ не найден.")
+
+    alerts = db.setdefault("alerts", {})
+    user_cfg = alerts.setdefault(uid, {})
+    metric_cfg = user_cfg.setdefault(secret, {})
+    metric_cfg[metric] = threshold
+    save_db(db)
+    await update.message.reply_text(
+        f"✅ Алерт для {metric.upper()} {threshold}% сохранён."
+    )
+
+async def cmd_delalert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if len(ctx.args) != 2:
+        return await update.message.reply_text(
+            "Синтаксис: /delalert <ключ/имя> <метрика>"
+        )
+
+    key, metric = ctx.args
+    metric = metric.lower()
+    if metric not in {"cpu", "ram", "gpu", "vram"}:
+        return await update.message.reply_text("Неизвестная метрика.")
+
+    db = load_db()
+    uid = str(update.effective_user.id)
+
+    secret = None
+    entry = db["secrets"].get(key)
+    if entry and is_owner(entry, update.effective_user.id):
+        secret = key
+    else:
+        for s, e in db["secrets"].items():
+            if is_owner(e, update.effective_user.id) and e.get("nickname") == key:
+                secret = s
+                break
+    if not secret:
+        return await update.message.reply_text("Ключ не найден.")
+
+    alerts = db.get("alerts", {})
+    user_cfg = alerts.get(uid)
+    if not user_cfg or secret not in user_cfg or metric not in user_cfg[secret]:
+        return await update.message.reply_text("Алерт не найден.")
+
+    user_cfg[secret].pop(metric, None)
+    if not user_cfg[secret]:
+        user_cfg.pop(secret)
+    if not user_cfg:
+        alerts.pop(uid)
+
+    last_key = f"{uid}:{secret}:{metric}"
+    db.get("alert_last", {}).pop(last_key, None)
+
+    save_db(db)
+    await update.message.reply_text("🗑️ Алерт удалён")
 
 # ───────────────────- Plot helpers ─────────────────────────────────────────
 def _find_gaps(ts, factor: float = 2.0):
@@ -881,6 +997,7 @@ async def push(secret: str, payload: PushPayload):
         return {"ok": True}
 
     record_metric(secret, payload.model_dump())
+    await maybe_send_alerts(secret, payload.model_dump())
 
     return {"ok": True}
 
@@ -908,19 +1025,22 @@ def main():
     threading.Thread(target=start_uvicorn, daemon=True).start()
     log.info("🌐 FastAPI on port %s", API_PORT)
 
-    app_tg = ApplicationBuilder().token(TOKEN).build()
-    app_tg.add_handler(CommandHandler(["start", "help"], cmd_start))
-    app_tg.add_handler(CommandHandler("newkey", cmd_newkey))
-    app_tg.add_handler(CommandHandler("linkkey", cmd_linkkey))
-    app_tg.add_handler(CommandHandler("set", cmd_setactive))
-    app_tg.add_handler(CommandHandler("list", cmd_list))
-    app_tg.add_handler(CommandHandler("status", cmd_status))
-    app_tg.add_handler(CommandHandler("renamekey", cmd_renamekey))
-    app_tg.add_handler(CommandHandler("delkey", cmd_delkey))
-    app_tg.add_handler(CallbackQueryHandler(cb_action))
+    global TG_APP
+    TG_APP = ApplicationBuilder().token(TOKEN).build()
+    TG_APP.add_handler(CommandHandler(["start", "help"], cmd_start))
+    TG_APP.add_handler(CommandHandler("newkey", cmd_newkey))
+    TG_APP.add_handler(CommandHandler("linkkey", cmd_linkkey))
+    TG_APP.add_handler(CommandHandler("set", cmd_setactive))
+    TG_APP.add_handler(CommandHandler("list", cmd_list))
+    TG_APP.add_handler(CommandHandler("status", cmd_status))
+    TG_APP.add_handler(CommandHandler("renamekey", cmd_renamekey))
+    TG_APP.add_handler(CommandHandler("delkey", cmd_delkey))
+    TG_APP.add_handler(CommandHandler("setalert", cmd_setalert))
+    TG_APP.add_handler(CommandHandler("delalert", cmd_delalert))
+    TG_APP.add_handler(CallbackQueryHandler(cb_action))
 
     log.info("🤖 Polling…")
-    app_tg.run_polling(allowed_updates=["message", "callback_query"])
+    TG_APP.run_polling(allowed_updates=["message", "callback_query"])
 
 if __name__ == "__main__":
     try:
