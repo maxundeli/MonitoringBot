@@ -119,6 +119,8 @@ logging.basicConfig(
 log = logging.getLogger("remote-bot")
 
 UNIT_NAMES = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+# Для сетевой скорости используем биты
+UNIT_NAMES_BITS = ["bit", "Kbit", "Mbit", "Gbit", "Tbit", "Pbit"]
 
 def human_bytes(num: float) -> str:
     for unit in UNIT_NAMES:
@@ -127,17 +129,26 @@ def human_bytes(num: float) -> str:
         num /= 1024
     return f"{num:.1f} EiB"
 
-def best_unit(max_val: float) -> tuple[float, str]:
-    """Return scale factor and unit for network speeds."""
-    scale = 1.0
-    unit = UNIT_NAMES[0] + "/s"
+def human_net_speed(num_bytes_per_sec: float) -> str:
+    """Показать скорость в битах в секунду."""
+    num = num_bytes_per_sec * 8
+    for unit in UNIT_NAMES_BITS:
+        if num < 1000:
+            return f"{num:.1f} {unit}/s"
+        num /= 1000
+    return f"{num:.1f} Ebit/s"
+
+def best_unit(max_val_bytes: float) -> tuple[float, str]:
+    """Return scale factor and unit for network speeds in bits."""
+    max_bits = max_val_bytes * 8
+    scale_bits = 1.0
     idx = 0
-    while idx < len(UNIT_NAMES) - 1 and max_val >= 1024:
-        max_val /= 1024
+    while idx < len(UNIT_NAMES_BITS) - 1 and max_bits >= 1000:
+        max_bits /= 1000
+        scale_bits *= 1000
         idx += 1
-        scale *= 1024
-        unit = UNIT_NAMES[idx] + "/s"
-    return scale, unit
+    unit = UNIT_NAMES_BITS[idx] + "/s"
+    return scale_bits / 8, unit
 
 def disk_bar(p: float, length: int = 10) -> str:
     filled = int(round(p * length / 100))
@@ -369,7 +380,7 @@ def format_status(row: sqlite3.Row) -> str:
     if row['net_up'] is not None and row['net_down'] is not None:
         lines.extend([
             "*━━━━━━━━━━━NET━━━━━━━━━━━*",
-            f"📡 Net: ↑ {human_bytes(row['net_up'])}/s ↓ {human_bytes(row['net_down'])}/s",
+            f"📡 Net: ↑ {human_net_speed(row['net_up'])} ↓ {human_net_speed(row['net_down'])}",
         ])
     if row['gpu'] is not None:
         lines.extend([
@@ -762,8 +773,8 @@ def plot_metric(secret: str, metric: str, seconds: int):
         "ram": (2, "RAM %", "%", (0, 100)),
         "gpu": (3, "GPU %", "%", (0, 100)),
         "vram": (4, "VRAM %", "%", (0, 100)),
-        "net_up": (5, "Net Up", "B/s", None),
-        "net_down": (6, "Net Down", "B/s", None),
+        "net_up": (5, "Net Up", "bit/s", None),
+        "net_down": (6, "Net Down", "bit/s", None),
     }
     col_idx, label, ylab, ylim = idx_map[metric]
     ys = [np.nan if rows[i][col_idx] is None else rows[i][col_idx] for i in range(len(rows))]
