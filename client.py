@@ -554,7 +554,11 @@ def run_diagnostics() -> str | None:
                 tmp = Path(tempfile.gettempdir()) / "dxdiag.txt"
                 cmd = ["dxdiag", "/dontskip", "/whql:off", "/t", str(tmp)]
                 subprocess.run(cmd, check=True, timeout=120)
-                return tmp.read_text(encoding="utf-16", errors="ignore")
+                try:
+                    return tmp.read_text(encoding="utf-16")
+                except UnicodeError as exc:
+                    log.warning("dxdiag UTF-16 parse failed: %s", exc)
+                    return tmp.read_text(encoding="utf-16le", errors="ignore")
             if shutil.which("systeminfo"):
                 out = subprocess.check_output(["systeminfo"], text=True, timeout=120, errors="ignore")
                 return out
