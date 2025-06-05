@@ -19,7 +19,7 @@ import sys
 import threading
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import matplotlib
 import uvicorn
@@ -48,7 +48,8 @@ API_PORT = int(os.getenv("PORT", "8000"))
 # последний текстовый статус от клиентов (speedtest и пр.)
 LATEST_TEXT: Dict[str, str] = {}
 # диагностические отчёты, отправляемые агентом
-LATEST_DIAG: Dict[str, str] = {}
+LATEST_DIAG: Dict[str, Optional[str]] = {}
+_MISSING = object()
 
 # ссылка на экземпляр Telegram-приложения для отправки уведомлений
 TG_APP = None
@@ -201,8 +202,8 @@ async def check_diag_done(ctx: ContextTypes.DEFAULT_TYPE):
     if "diag" in entry.get("pending", []):
         return
 
-    txt: str | None = LATEST_DIAG.get(secret)
-    if not txt:
+    result = LATEST_DIAG.get(secret, _MISSING)
+    if result is _MISSING:
         start_ts = data.setdefault("start_ts", time.time())
         TIMEOUT = 3 * 60
         if time.time() - start_ts > TIMEOUT:
@@ -213,6 +214,17 @@ async def check_diag_done(ctx: ContextTypes.DEFAULT_TYPE):
             )
             job.schedule_removal()
         return
+    if result is None:
+        await ctx.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=msg_id,
+            text="⚠️ Диагностика не удалась.",
+        )
+        LATEST_DIAG.pop(secret, None)
+        job.schedule_removal()
+        return
+
+    txt = result
 
     buf = io.BytesIO(txt.encode())
     doc = InputFile(buf, filename="diagnostics.txt")
@@ -911,6 +923,7 @@ class PushPayload(BaseModel):
     disks: list[dict] | None = None
     text: str | None = None
     diag: str | None = None
+    diag_ok: bool | None = None
 
 @app.post("/api/push/{secret}")
 async def push(secret: str, payload: PushPayload):
@@ -921,8 +934,8 @@ async def push(secret: str, payload: PushPayload):
     if payload.text:
         LATEST_TEXT[secret] = payload.text
 
-    if payload.diag:
-        LATEST_DIAG[secret] = payload.diag
+    if payload.diag_ok is not None:
+        LATEST_DIAG[secret] = payload.diag if payload.diag_ok else None
         return {"ok": True}
 
     if payload.cpu is None or payload.ram is None:

@@ -569,9 +569,14 @@ def run_diagnostics() -> str | None:
         log.error("diagnostics failed: %s", exc)
     return None
 
-def push_diag(txt: str):
+def push_diag(txt: str, ok: bool = True):
+    """Send diagnostics result to the server."""
     try:
-        r = _request("POST", f"{SERVER}/api/push/{SECRET}", json={"diag": txt})
+        r = _request(
+            "POST",
+            f"{SERVER}/api/push/{SECRET}",
+            json={"diag": txt, "diag_ok": ok},
+        )
         r.raise_for_status()
     except Exception as e:
         log.error("diag push error: %s", e)
@@ -581,9 +586,9 @@ def _diag_job():
     push_text("⏳ Собираем диагностику…")
     out = run_diagnostics()
     if out:
-        push_diag(out)
+        push_diag(out, ok=True)
     else:
-        push_text("⚠️ Диагностика не удалась.")
+        push_diag("", ok=False)
     diag_running = False
 # ────── network layer: TLS TOFU + fingerprint pinning ────────────
 import ssl, socket, json, hashlib, pathlib, logging, requests
