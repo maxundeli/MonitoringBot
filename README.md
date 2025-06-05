@@ -94,9 +94,9 @@ Values are persisted to a local `.env` file after the first run.
 ```
 MonitoringBot/
 ├── client.py
-├── server.py  # основной сервер
-├── db.py      # работа с БД
-├── graphs.py  # построение графиков
+├── server.py  # main server
+├── db.py      # DB helper
+├── graphs.py  # graphs building
 ├── requirements.txt
 └── README.md
 ```
