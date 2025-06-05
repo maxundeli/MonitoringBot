@@ -23,6 +23,7 @@ from typing import List, Optional
 import shutil
 import subprocess
 import tempfile
+import locale
 import psutil
 import requests
 from requests import Session
@@ -558,7 +559,11 @@ def run_diagnostics() -> str | None:
                     return tmp.read_text(encoding="utf-16")
                 except UnicodeError as exc:
                     log.warning("dxdiag UTF-16 parse failed: %s", exc)
-                    return tmp.read_text(encoding="utf-16le", errors="ignore")
+                    enc = locale.getpreferredencoding(False)
+                    try:
+                        return tmp.read_text(encoding=enc, errors="ignore")
+                    except UnicodeError:
+                        return tmp.read_text(encoding="utf-8", errors="ignore")
             if shutil.which("systeminfo"):
                 out = subprocess.check_output(["systeminfo"], text=True, timeout=120, errors="ignore")
                 return out
