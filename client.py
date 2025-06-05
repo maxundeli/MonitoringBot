@@ -20,7 +20,8 @@ import time
 from datetime import timedelta
 from pathlib import Path
 from typing import List, Optional
-import shutil, subprocess, re
+import shutil
+import subprocess
 import tempfile
 import psutil
 import requests
@@ -546,11 +547,17 @@ def _speedtest_job():
 diag_running = False
 
 def run_diagnostics() -> str | None:
+    """Collect diagnostics data using available system tools."""
     try:
-        if platform.system() == "Windows" and shutil.which("dxdiag"):
-            tmp = Path(tempfile.gettempdir()) / "dxdiag.txt"
-            subprocess.run(["dxdiag", "/t", str(tmp)], check=True, timeout=120)
-            return tmp.read_text(encoding="utf-8", errors="ignore")
+        if platform.system() == "Windows":
+            if shutil.which("dxdiag"):
+                tmp = Path(tempfile.gettempdir()) / "dxdiag.txt"
+                cmd = ["dxdiag", "/dontskip", "/whql:off", "/t", str(tmp)]
+                subprocess.run(cmd, check=True, timeout=120)
+                return tmp.read_text(encoding="utf-16", errors="ignore")
+            if shutil.which("systeminfo"):
+                out = subprocess.check_output(["systeminfo"], text=True, timeout=120, errors="ignore")
+                return out
 
         if shutil.which("inxi"):
             out = subprocess.check_output(["inxi", "-F"], text=True, timeout=120)
