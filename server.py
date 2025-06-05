@@ -707,6 +707,68 @@ async def cmd_delalert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     save_db(db)
     await update.message.reply_text("🗑️ Алерт удалён")
 
+async def cmd_plot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if len(ctx.args) < 3:
+        return await update.message.reply_text(
+            "Синтаксис: /plot <ключ/имя> <метрики> <интервал> [предел] [единицы]"
+        )
+
+    key = ctx.args[0]
+    metrics = [m for m in ctx.args[1].split(";") if m]
+    rest = ctx.args[2:]
+
+    time_tokens = []
+    while rest and re.fullmatch(r"\d+[smhd]", rest[0], re.I):
+        time_tokens.append(rest.pop(0))
+    if not time_tokens:
+        return await update.message.reply_text("Неверный интервал")
+    try:
+        seconds = parse_timespan(time_tokens)
+    except ValueError:
+        return await update.message.reply_text("Неверный интервал")
+
+    top = None
+    unit = None
+    if rest:
+        try:
+            top = float(rest[0])
+            rest = rest[1:]
+        except ValueError:
+            top = None
+        if rest:
+            unit = rest[0].rstrip(';')
+            rest = rest[1:]
+    if rest:
+        return await update.message.reply_text("Слишком много аргументов")
+
+    db = load_db()
+    uid = update.effective_user.id
+    secret = None
+    entry = db["secrets"].get(key)
+    if entry and is_owner(entry, uid):
+        secret = key
+    else:
+        for s, e in db["secrets"].items():
+            if is_owner(e, uid) and e.get("nickname") == key:
+                secret = s
+                break
+    if not secret:
+        return await update.message.reply_text("Ключ не найден.")
+
+    try:
+        buf = plot_custom(secret, metrics, seconds, top, unit)
+    except ValueError as exc:
+        return await update.message.reply_text(f"❌ {exc}")
+    if not buf:
+        return await update.message.reply_text("Данных за этот период нет.")
+
+    caption = f"{'/'.join([m.upper() for m in metrics])} за {timedelta(seconds=seconds)}"
+    if seconds >= 86400:
+        doc = InputFile(buf, filename="plot.png")
+        await ctx.bot.send_document(chat_id=update.effective_chat.id, document=doc, caption=caption)
+    else:
+        await ctx.bot.send_photo(chat_id=update.effective_chat.id, photo=buf, caption=caption)
+
 # ───────────────────- Plot helpers ─────────────────────────────────────────
 def _find_gaps(ts, factor: float = 2.0):
     if len(ts) < 2:
@@ -727,6 +789,28 @@ def _find_gaps(ts, factor: float = 2.0):
             start = i
     segments.append((start, len(ts) - 1))
     return segments, gaps, thr
+
+
+TIME_RE = re.compile(r"^(\d+)([smhd])$", re.I)
+
+def parse_timespan(tokens: list[str]) -> int:
+    """Parse duration tokens like ['2d', '3h', '15m'] into seconds."""
+    total = 0
+    for t in tokens:
+        m = TIME_RE.match(t)
+        if not m:
+            raise ValueError(f"invalid time token: {t}")
+        val = int(m.group(1))
+        unit = m.group(2).lower()
+        if unit == "s":
+            total += val
+        elif unit == "m":
+            total += val * 60
+        elif unit == "h":
+            total += val * 3600
+        elif unit == "d":
+            total += val * 86400
+    return total
 
 
 def _plot_segments(ax, ts, ys, segments, *args, **kwargs):
@@ -891,6 +975,181 @@ def plot_all_metrics(secret: str, seconds: int):
     ax.set_ylabel("%")
     ax.grid(True, linestyle="--", linewidth=0.3)
     ax.legend(loc="upper left", fontsize="small")
+    fig.autofmt_xdate()
+
+    buf = io.BytesIO()
+    plt.tight_layout()
+    fig.savefig(buf, dpi=fig.dpi, format="png")
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def fetch_metrics_full(secret: str, since: int) -> list[dict]:
+    rows = sql.execute(
+        "SELECT ts, cpu, ram, gpu, vram, net_up, net_down, ram_used, ram_total, vram_used, vram_total FROM metrics "
+        "WHERE secret=? AND ts>=? ORDER BY ts ASC",
+        (secret, since),
+    ).fetchall()
+    if not rows:
+        return []
+
+    def avg(vals):
+        vals = [v for v in vals if v is not None]
+        return sum(vals) / len(vals) if vals else None
+
+    grouped = []
+    chunk = []
+    for r in rows:
+        chunk.append(r)
+        if len(chunk) == 6:
+            grouped.append(_avg_chunk_full(chunk, avg))
+            chunk = []
+    if chunk:
+        grouped.append(_avg_chunk_full(chunk, avg))
+    return grouped
+
+
+def _avg_chunk_full(chunk, avg_fn):
+    r_last = chunk[-1]
+    return {
+        "ts": r_last[0],
+        "cpu": avg_fn([r[1] for r in chunk]),
+        "ram": avg_fn([r[2] for r in chunk]),
+        "gpu": avg_fn([r[3] for r in chunk]),
+        "vram": avg_fn([r[4] for r in chunk]),
+        "net_up": avg_fn([r[5] for r in chunk]),
+        "net_down": avg_fn([r[6] for r in chunk]),
+        "ram_used": avg_fn([r[7] for r in chunk]),
+        "ram_total": r_last[8],
+        "vram_used": avg_fn([r[9] for r in chunk]),
+        "vram_total": r_last[10],
+    }
+
+
+MEM_UNITS = {
+    "b": 1,
+    "kb": 1024,
+    "kib": 1024,
+    "mb": 1024 ** 2,
+    "mib": 1024 ** 2,
+    "gb": 1024 ** 3,
+    "gib": 1024 ** 3,
+}
+
+NET_UNITS = {
+    "bit": 1,
+    "kbit": 1000,
+    "mbit": 1000 ** 2,
+    "gbit": 1000 ** 3,
+}
+
+
+def plot_custom(secret: str, metrics: list[str], seconds: int, ylim_top: float | None, unit: str | None):
+    rows = fetch_metrics_full(secret, int(time.time()) - seconds)
+    if not rows:
+        return None
+
+    ts = [datetime.fromtimestamp(r["ts"]) for r in rows]
+    segments, gaps, _ = _find_gaps(ts)
+
+    plt.style.use("dark_background")
+    fig, ax = _make_figure(seconds)
+
+    unit_category = None
+    ylab = unit
+
+    data_sets: list[tuple[list[float], str]] = []
+
+    for m in metrics:
+        m = m.lower()
+        if m == "net":
+            metrics.extend(["net_up", "net_down"])
+            continue
+
+    for m in metrics:
+        m = m.lower()
+        label = m.upper()
+        ys = []
+        cat = ""
+        default_unit = "%"
+
+        if m == "cpu":
+            ys = [r["cpu"] for r in rows]
+            cat = "percent"
+        elif m == "gpu":
+            ys = [r["gpu"] for r in rows]
+            cat = "percent"
+        elif m == "ram":
+            if unit and unit.lower() not in {"%", "percent"}:
+                factor = MEM_UNITS.get(unit.lower(), 1024 ** 2)
+                ys = [r["ram_used"] / factor if r["ram_used"] is not None else np.nan for r in rows]
+                cat = "bytes"
+                default_unit = unit
+            else:
+                ys = [r["ram"] for r in rows]
+                cat = "percent"
+        elif m == "vram":
+            if unit and unit.lower() not in {"%", "percent"}:
+                factor = MEM_UNITS.get(unit.lower(), 1024 ** 2)
+                ys = [r["vram_used"] / factor if r["vram_used"] is not None else np.nan for r in rows]
+                cat = "bytes"
+                default_unit = unit
+            else:
+                ys = [r["vram"] for r in rows]
+                cat = "percent"
+        elif m == "net_up":
+            cat = "net"
+            default_unit = "bit/s"
+            if unit and unit.lower() in NET_UNITS:
+                scale = NET_UNITS[unit.lower()]
+                ys = [r["net_up"] * 8 / scale if r["net_up"] is not None else np.nan for r in rows]
+            else:
+                max_val = max([r["net_up"] or 0 for r in rows])
+                scale, auto_unit = best_unit(max_val)
+                ys = [r["net_up"] / scale if r["net_up"] is not None else np.nan for r in rows]
+                if not unit:
+                    ylab = auto_unit
+            label = "Up"
+        elif m == "net_down":
+            cat = "net"
+            default_unit = "bit/s"
+            if unit and unit.lower() in NET_UNITS:
+                scale = NET_UNITS[unit.lower()]
+                ys = [r["net_down"] * 8 / scale if r["net_down"] is not None else np.nan for r in rows]
+            else:
+                max_val = max([r["net_down"] or 0 for r in rows])
+                scale, auto_unit = best_unit(max_val)
+                ys = [r["net_down"] / scale if r["net_down"] is not None else np.nan for r in rows]
+                if not unit:
+                    ylab = auto_unit
+            label = "Down"
+        else:
+            continue
+
+        if unit_category is None:
+            unit_category = cat
+            if not ylab:
+                ylab = default_unit
+        elif unit_category != cat:
+            raise ValueError("Единицы метрик не совпадают")
+
+        data_sets.append((ys, label))
+
+    for ys, lab in data_sets:
+        _plot_segments(ax, ts, ys, segments, label=lab, linewidth=1.2)
+
+    for g0, g1 in gaps:
+        ax.axvspan(g0, g1, facecolor="none", hatch="//", edgecolor="white", alpha=0.3, linewidth=0)
+
+    ax.set_xlabel("Время")
+    ax.set_ylabel(ylab or "%")
+    if ylim_top is not None:
+        ax.set_ylim(0, ylim_top)
+    ax.set_title(f"{'/'.join([l for _, l in data_sets])} за {timedelta(seconds=seconds)}")
+    ax.grid(True, linestyle="--", linewidth=0.3)
+    if len(data_sets) > 1:
+        ax.legend(loc="upper left", fontsize="small")
     fig.autofmt_xdate()
 
     buf = io.BytesIO()
@@ -1156,6 +1415,7 @@ def main():
     TG_APP.add_handler(CommandHandler("delkey", cmd_delkey))
     TG_APP.add_handler(CommandHandler("setalert", cmd_setalert))
     TG_APP.add_handler(CommandHandler("delalert", cmd_delalert))
+    TG_APP.add_handler(CommandHandler("plot", cmd_plot))
     TG_APP.add_handler(CallbackQueryHandler(cb_action))
 
     # очищаем старые метрики и запускаем периодическую уборку

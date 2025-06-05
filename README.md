@@ -74,6 +74,7 @@ python client.py
 * `Reboot` / `Shutdown` – remote control actions
 * `/setalert <key|name> <metric> <threshold>` – configure alerts
 * `/delalert <key|name> <metric>` – remove alert
+* `/plot <key|name> <metrics> <interval> [limit] [unit]` – custom chart
 
 ## Configuration
 
