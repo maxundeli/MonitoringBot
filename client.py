@@ -15,13 +15,13 @@ try:
 except ImportError:
     speedtest = None
 import re
-import subprocess
 import sys
 import time
 from datetime import timedelta
 from pathlib import Path
 from typing import List, Optional
 import shutil, subprocess, re
+import tempfile
 import psutil
 import requests
 from requests import Session
@@ -541,6 +541,43 @@ def _speedtest_job():
     else:
         push_text("⚠️  Speedtest не удался.")
     speedtest_running = False
+
+# ---------- diagnostics helper ----------
+diag_running = False
+
+def run_diagnostics() -> str | None:
+    try:
+        if platform.system() == "Windows" and shutil.which("dxdiag"):
+            tmp = Path(tempfile.gettempdir()) / "dxdiag.txt"
+            subprocess.run(["dxdiag", "/t", str(tmp)], check=True, timeout=120)
+            return tmp.read_text(encoding="utf-8", errors="ignore")
+
+        if shutil.which("inxi"):
+            out = subprocess.check_output(["inxi", "-F"], text=True, timeout=120)
+            return out
+        if shutil.which("lshw"):
+            out = subprocess.check_output(["lshw", "-short"], text=True, timeout=120)
+            return out
+    except Exception as exc:
+        log.error("diagnostics failed: %s", exc)
+    return None
+
+def push_diag(txt: str):
+    try:
+        r = _request("POST", f"{SERVER}/api/push/{SECRET}", json={"diag": txt})
+        r.raise_for_status()
+    except Exception as e:
+        log.error("diag push error: %s", e)
+
+def _diag_job():
+    global diag_running
+    push_text("⏳ Собираем диагностику…")
+    out = run_diagnostics()
+    if out:
+        push_diag(out)
+    else:
+        push_text("⚠️ Диагностика не удалась.")
+    diag_running = False
 # ────── network layer: TLS TOFU + fingerprint pinning ────────────
 import ssl, socket, json, hashlib, pathlib, logging, requests
 from urllib.parse import urlparse
@@ -657,4 +694,11 @@ while True:
                 threading.Thread(target=_speedtest_job, daemon=True).start()
             else:
                 push_text("🚧 Speedtest уже выполняется, дождитесь окончания.")
+        elif c == "diag":
+            if not diag_running:
+                log.info("cmd diagnostics (async)")
+                diag_running = True
+                threading.Thread(target=_diag_job, daemon=True).start()
+            else:
+                push_text("🚧 Диагностика уже выполняется, дождитесь окончания.")
     time.sleep(INTERVAL)

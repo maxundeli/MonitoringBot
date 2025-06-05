@@ -13,6 +13,7 @@ import time
 import sqlite3
 import string
 from telegram import InputFile
+import io
 import subprocess
 import sys
 import threading
@@ -46,6 +47,8 @@ API_PORT = int(os.getenv("PORT", "8000"))
 
 # последний текстовый статус от клиентов (speedtest и пр.)
 LATEST_TEXT: Dict[str, str] = {}
+# диагностические отчёты, отправляемые агентом
+LATEST_DIAG: Dict[str, str] = {}
 
 # ссылка на экземпляр Telegram-приложения для отправки уведомлений
 TG_APP = None
@@ -186,6 +189,43 @@ async def check_speedtest_done(ctx: ContextTypes.DEFAULT_TYPE):
     job.schedule_removal()
 
 
+async def check_diag_done(ctx: ContextTypes.DEFAULT_TYPE):
+    job = ctx.job
+    data = job.data
+
+    secret = data["secret"]
+    chat_id = data["chat_id"]
+    msg_id = data["msg_id"]
+
+    entry = load_db()["secrets"].get(secret, {})
+    if "diag" in entry.get("pending", []):
+        return
+
+    txt: str | None = LATEST_DIAG.get(secret)
+    if not txt:
+        start_ts = data.setdefault("start_ts", time.time())
+        TIMEOUT = 3 * 60
+        if time.time() - start_ts > TIMEOUT:
+            await ctx.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text="⚠️ Диагностика заняла много времени и была прервана.",
+            )
+            job.schedule_removal()
+        return
+
+    buf = io.BytesIO(txt.encode())
+    doc = InputFile(buf, filename="diagnostics.txt")
+    await ctx.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=msg_id,
+        text="📄 Диагностика готова.",
+    )
+    await ctx.bot.send_document(chat_id=chat_id, document=doc)
+    LATEST_DIAG.pop(secret, None)
+    job.schedule_removal()
+
+
 
 async def _purge_loop():
     while True:
@@ -297,6 +337,7 @@ def status_keyboard(secret: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("📡 Net", callback_data=f"graph:net:{secret}"),
             ],
             [InlineKeyboardButton("🏎️ Speedtest", callback_data=f"speedtest:{secret}")],
+            [InlineKeyboardButton("📋 Диагностика", callback_data=f"diag:{secret}")],
             [
                 InlineKeyboardButton("🔄 Reboot",   callback_data=f"reboot:{secret}"),
                 InlineKeyboardButton("⏻ Shutdown", callback_data=f"shutdown:{secret}"),
@@ -768,6 +809,32 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             },
         )
         return
+
+    if action == "diag":
+        secret = parts[1]
+        entry = db["secrets"].get(secret)
+        if not entry or not is_owner(entry, q.from_user.id):
+            await q.answer("🚫 Нет доступа.", show_alert=True)
+            return
+        entry.setdefault("pending", []).append("diag")
+        save_db(db)
+
+        await q.answer()
+        msg = await ctx.bot.send_message(
+            chat_id=q.message.chat_id,
+            text="⏳ Собираем диагностику…",
+        )
+
+        ctx.job_queue.run_repeating(
+            callback=check_diag_done,
+            interval=3,
+            data={
+                "secret": secret,
+                "chat_id": msg.chat_id,
+                "msg_id": msg.message_id,
+            },
+        )
+        return
     # ───── graph selection ─────
     if action == "graph":
         metric = parts[1]
@@ -843,6 +910,7 @@ class PushPayload(BaseModel):
     uptime: int | None = None
     disks: list[dict] | None = None
     text: str | None = None
+    diag: str | None = None
 
 @app.post("/api/push/{secret}")
 async def push(secret: str, payload: PushPayload):
@@ -852,6 +920,10 @@ async def push(secret: str, payload: PushPayload):
 
     if payload.text:
         LATEST_TEXT[secret] = payload.text
+
+    if payload.diag:
+        LATEST_DIAG[secret] = payload.diag
+        return {"ok": True}
 
     if payload.cpu is None or payload.ram is None:
         return {"ok": True}
