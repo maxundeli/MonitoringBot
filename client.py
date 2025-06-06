@@ -179,6 +179,40 @@ def get_cpu_temp() -> str | None:
             except Exception:
                 continue
 
+    # ── 3) Windows: стандартный датчик ACPI через WMI ──────
+    if platform.system() == "Windows" and wmi:
+        try:
+            c = wmi.WMI(namespace="root\\WMI")
+            for t in c.MSAcpi_ThermalZoneTemperature():
+                cur = getattr(t, "CurrentTemperature", None)
+                if cur:
+                    return f"{cur / 10 - 273.15:.1f} °C"
+        except Exception:
+            pass
+
+    # ── 4) Windows: wmic CLI fallback ───────────────────────
+    if platform.system() == "Windows":
+        try:
+            out = subprocess.check_output(
+                [
+                    "wmic",
+                    "/namespace:\\root\\wmi",
+                    "PATH",
+                    "MSAcpi_ThermalZoneTemperature",
+                    "get",
+                    "CurrentTemperature",
+                ],
+                text=True,
+                timeout=2,
+                stderr=subprocess.DEVNULL,
+            )
+            m = re.search(r"(\d+)", out)
+            if m:
+                temp = int(m.group(1))
+                return f"{temp / 10 - 273.15:.1f} °C"
+        except Exception:
+            pass
+
     return None
 def _nvidia_gpu_metrics() -> dict | None:
     """Try reading metrics using NVIDIA-specific tools."""
