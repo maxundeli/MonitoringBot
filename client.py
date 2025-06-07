@@ -24,6 +24,8 @@ import shutil
 import subprocess
 import tempfile
 import locale
+import importlib
+import zipfile, io
 import psutil
 import requests
 from requests import Session
@@ -38,6 +40,32 @@ log = logging.getLogger("pc-agent")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 ENV_FILE = Path(".env")
+
+def _ensure_wmi():
+    """Ensure wmi and pywin32 packages are installed."""
+    global wmi
+    if wmi is not None or platform.system() != "Windows":
+        return
+    try:
+        subprocess.check_call([
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "pywin32",
+            "wmi",
+        ])
+        subprocess.call([
+            sys.executable,
+            "-m",
+            "pywin32_postinstall",
+            "-install",
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        wmi = importlib.import_module("wmi")
+        log.info("get_cpu_temp: wmi/pywin32 installed")
+    except Exception as e:
+        log.warning("get_cpu_temp: failed to install wmi/pywin32: %s", e)
 
 # ────────────────────────── load .env → os.environ ─────────────────────────
 if ENV_FILE.exists():
@@ -155,6 +183,60 @@ def gather_disks_metrics() -> List[dict]:
 
     return res
 
+def _cpu_temp_lhm_lib() -> str | None:
+    """Read CPU temperature using LibreHardwareMonitorLib via pythonnet."""
+    if platform.system() != "Windows":
+        return None
+    try:
+        import clr  # type: ignore
+    except Exception:
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "--quiet", "pythonnet", "requests"],
+                stdout=subprocess.DEVNULL,
+            )
+            import clr  # type: ignore
+        except Exception as e:
+            log.warning("get_cpu_temp: pythonnet install failed: %s", e)
+            return None
+
+    dll = Path(tempfile.gettempdir()) / "LibreHardwareMonitorLib.dll"
+    if not dll.exists():
+        try:
+            import requests
+            data = requests.get(
+                "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/latest/download/LibreHardwareMonitor-net472.zip",
+                timeout=10,
+            ).content
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                zf.extract("LibreHardwareMonitorLib.dll", dll.parent)
+            log.info("get_cpu_temp: LibreHardwareMonitorLib downloaded")
+        except Exception as e:
+            log.warning("get_cpu_temp: failed to fetch LibreHardwareMonitorLib: %s", e)
+            return None
+
+    try:
+        clr.AddReference(str(dll))
+        from LibreHardwareMonitor.Hardware import Computer, HardwareType, SensorType
+
+        comp = Computer()
+        comp.IsCpuEnabled = True
+        comp.Open()
+        for hw in comp.Hardware:
+            if hw.HardwareType == HardwareType.Cpu:
+                hw.Update()
+                for s in hw.Sensors:
+                    if s.SensorType == SensorType.Temperature and "package" in s.Name.lower():
+                        val = s.Value
+                        if val is not None:
+                            log.info("get_cpu_temp via LHM: %s", val)
+                            comp.Close()
+                            return f"{val:.1f} °C"
+        comp.Close()
+    except Exception as e:
+        log.warning("get_cpu_temp LHM failed: %s", e)
+    return None
+
 def get_cpu_temp() -> str | None:
     log.info("get_cpu_temp: start on %s", platform.system())
 
@@ -165,14 +247,8 @@ def get_cpu_temp() -> str | None:
             log.info("get_cpu_temp: admin=%s wmi_present=%s", admin, bool(wmi))
         except Exception as e:
             log.warning("get_cpu_temp: failed to check admin rights: %s", e)
-        if wmi is None:
-            try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "wmi", "pywin32"], stdout=subprocess.DEVNULL)
-                import importlib
-                globals()["wmi"] = importlib.import_module("wmi")
-                log.info("get_cpu_temp: wmi module installed")
-            except Exception as e:
-                log.warning("get_cpu_temp: failed to install wmi: %s", e)
+
+        _ensure_wmi()
 
     # ── 1) стандартный psutil ─────────────────────────────
     try:
@@ -271,6 +347,11 @@ def get_cpu_temp() -> str | None:
                 return f"{val:.1f} °C"
         except Exception as e:
             log.warning("get_cpu_temp powershell failed: %s", e)
+
+    if platform.system() == "Windows":
+        val = _cpu_temp_lhm_lib()
+        if val:
+            return val
 
     log.info("get_cpu_temp: no data")
     return None
