@@ -785,7 +785,15 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         ctx.job_queue.run_repeating(
             callback=check_status_done,
-        # текст не меняем, обновление придёт при получении свежих данных
+
+        # добавляем индикатор обновления, если ещё не добавлен
+        orig = q.message.text or ""
+        if not orig.startswith("\u23F3 ") and not orig.startswith("\u231B ") and not orig.startswith("\u23F3\uFE0F"):
+            await q.edit_message_text(
+                text=f"⏳ Обновляем...\n{orig}",
+                parse_mode="Markdown",
+                reply_markup=q.message.reply_markup,
+            )
             interval=1,
             data={
                 "secret": secret,
