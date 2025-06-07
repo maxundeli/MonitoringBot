@@ -90,6 +90,13 @@ python client.py
 
 Values are persisted to a local `.env` file after the first run.
 
+### TLS fingerprint
+On the first connection the client saves the server's TLS certificate
+fingerprint to `~/.bot_fingerprint.json`. If the certificate later changes
+(e.g. the server was reinstalled), the agent will stop with a dialog
+window advising you to delete this file and restart. This prevents silently
+accepting unexpected certificates.
+
 ## Project Structure
 ```
 MonitoringBot/
