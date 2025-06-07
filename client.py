@@ -25,7 +25,8 @@ import subprocess
 import tempfile
 import locale
 import psutil
-import heapq
+# Кэш для вычисления CPU без задержки
+PROC_CACHE: dict[int, tuple[float, float]] = {}
 import requests
 from requests import Session
 from requests.exceptions import SSLError, ConnectionError
@@ -159,32 +160,29 @@ def gather_disks_metrics() -> List[dict]:
 
 def gather_top_processes(count: int = 5) -> List[dict]:
     """Return top processes by CPU usage with their RAM usage."""
-    procs = []
+    now = time.time()
+    res = []
     for p in psutil.process_iter(["pid", "name"]):
         try:
             name = p.info.get("name") or str(p.pid)
             if name.lower() == "system idle process":
                 continue
-            p.cpu_percent(None)
-            procs.append(p)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-
-    time.sleep(0.1)
-
-    results = []
-    for p in procs:
-        try:
-            cpu = p.cpu_percent(None)
-            cpu /= psutil.cpu_count() or 1
+            cpu_time = sum(p.cpu_times()[:2])
+            prev = PROC_CACHE.get(p.pid)
+            cpu = 0.0
+            if prev:
+                dt = now - prev[1]
+                if dt > 0:
+                    cpu = (cpu_time - prev[0]) / dt * 100
+            PROC_CACHE[p.pid] = (cpu_time, now)
             mem = p.memory_info().rss
-            name = p.info.get("name") or str(p.pid)
-            results.append({"name": name, "cpu": cpu, "ram": mem})
+            cpu /= psutil.cpu_count() or 1
+            res.append({"name": name, "cpu": cpu, "ram": mem})
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-    results.sort(key=lambda x: x["cpu"], reverse=True)
-    return results[:count]
+    res.sort(key=lambda x: x["cpu"], reverse=True)
+    return res[:count]
 
 def get_cpu_temp() -> str | None:
     # ── 1) стандартный psutil ─────────────────────────────
