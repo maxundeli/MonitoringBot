@@ -106,12 +106,10 @@ def _apply_time_locator(ax, seconds: int) -> None:
         return
     if hours <= 48:
         interval = 1
-    elif hours <= 96:
-        interval = 2
     elif hours <= 7 * 24:
-        interval = 3
+        interval = 2
     else:
-        interval = 6
+        interval = 3
     ax.xaxis.set_major_locator(mdates.HourLocator(interval=interval))
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %H:%M"))
 
