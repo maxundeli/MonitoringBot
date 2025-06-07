@@ -179,6 +179,7 @@ def gather_top_processes(count: int = 5) -> List[dict]:
                 _PROC_CACHE[p.pid] = p
                 continue
             cpu = p.cpu_percent(None)
+            cpu /= psutil.cpu_count() or 1
             proc_stats.append((cpu, p))
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
@@ -524,8 +525,8 @@ def gather_net_usage():
     # даже если трафика нет, возвращаем 0, а не None
     return up / INTERVAL, down / INTERVAL
 
-def gather_metrics() -> dict:
-    cpu = psutil.cpu_percent(interval=1)
+def gather_metrics(full: bool = False) -> dict:
+    cpu = psutil.cpu_percent(interval=None)
     mem = psutil.virtual_memory()
     swap = psutil.swap_memory()
     net_up, net_down = gather_net_usage()
@@ -535,9 +536,7 @@ def gather_metrics() -> dict:
         cpu_temp = float(tmp.split()[0])
     uptime = int(time.time() - psutil.boot_time())
     gpu_data = gather_gpu_metrics() or {}
-    disks = gather_disks_metrics()
-    top_procs = gather_top_processes()
-    return {
+    data = {
         "cpu": cpu,
         "ram": mem.percent,
         "ram_used": mem.used,
@@ -548,11 +547,16 @@ def gather_metrics() -> dict:
         "cpu_temp": cpu_temp,
         "uptime": uptime,
         **gpu_data,
-        "disks": disks,
         "net_up": net_up,
         "net_down": net_down,
-        "top_procs": top_procs,
     }
+    if full:
+        data["disks"] = gather_disks_metrics()
+        data["top_procs"] = gather_top_processes()
+    else:
+        data["disks"] = []
+        data["top_procs"] = []
+    return data
 
 
 def _subprocess_flags() -> int:
@@ -831,6 +835,8 @@ def do_shutdown():
 # ────────────────────────── main loop ─────────────────────────────────────
 
 log.info("Agent started → %s", SERVER)
+psutil.cpu_percent(interval=None)
+
 while True:
     metrics = gather_metrics()
     push_metrics(metrics)
@@ -854,4 +860,7 @@ while True:
                 threading.Thread(target=_diag_job, daemon=True).start()
             else:
                 push_text("🚧 Диагностика уже выполняется, дождитесь окончания.")
+        elif c == "status":
+            log.info("cmd status")
+            push_metrics(gather_metrics(full=True))
     time.sleep(INTERVAL)

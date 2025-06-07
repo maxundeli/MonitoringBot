@@ -238,6 +238,41 @@ async def check_diag_done(ctx: ContextTypes.DEFAULT_TYPE):
     job.schedule_removal()
 
 
+async def check_status_done(ctx: ContextTypes.DEFAULT_TYPE):
+    job = ctx.job
+    data = job.data
+
+    secret = data["secret"]
+    chat_id = data["chat_id"]
+    msg_id = data["msg_id"]
+    prev_ts = data["prev_ts"]
+
+    row = sql.execute(
+        "SELECT * FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
+        (secret,),
+    ).fetchone()
+
+    if not row or row["ts"] <= prev_ts:
+        start_ts = data.setdefault("start_ts", time.time())
+        if time.time() - start_ts > 15:
+            await ctx.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text="⚠️ Статус не получен.",
+            )
+            job.schedule_removal()
+        return
+
+    await ctx.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=msg_id,
+        text=format_status(row),
+        parse_mode="Markdown",
+        reply_markup=status_keyboard(secret),
+    )
+    job.schedule_removal()
+
+
 
 async def _purge_loop():
     while True:
@@ -554,13 +589,28 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not secret:
         return await update.message.reply_text("Нет доступа или активного ключа.")
     row = sql.execute(
-        "SELECT * FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
+        "SELECT ts FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
         (secret,),
     ).fetchone()
-    if not row:
-        return await update.message.reply_text("Нет данных от агента.")
-    await update.message.reply_text(
-        format_status(row), parse_mode="Markdown", reply_markup=status_keyboard(secret)
+    prev_ts = row[0] if row else 0
+
+    db = load_db()
+    entry = db["secrets"].get(secret)
+    if not entry or not is_owner(entry, update.effective_user.id):
+        return await update.message.reply_text("🚫 Нет доступа.")
+    entry.setdefault("pending", []).append("status")
+    save_db(db)
+
+    msg = await update.message.reply_text("⏳ Получаем статус…")
+    ctx.job_queue.run_repeating(
+        callback=check_status_done,
+        interval=2,
+        data={
+            "secret": secret,
+            "chat_id": msg.chat_id,
+            "msg_id": msg.message_id,
+            "prev_ts": prev_ts,
+        },
     )
 
 async def cmd_setalert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -724,15 +774,28 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         entry = db["secrets"].get(secret)
         if not entry or not is_owner(entry, q.from_user.id):
             return await q.edit_message_text("🚫 Нет доступа.")
+
         row = sql.execute(
-            "SELECT * FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
+            "SELECT ts FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
             (secret,),
         ).fetchone()
-        if not row:
-            return await q.edit_message_text("Нет данных от агента.")
-        return await q.edit_message_text(
-            format_status(row), parse_mode="Markdown", reply_markup=status_keyboard(secret)
+        prev_ts = row[0] if row else 0
+
+        entry.setdefault("pending", []).append("status")
+        save_db(db)
+
+        await q.edit_message_text("⏳ Получаем статус…")
+        ctx.job_queue.run_repeating(
+            callback=check_status_done,
+            interval=2,
+            data={
+                "secret": secret,
+                "chat_id": q.message.chat_id,
+                "msg_id": q.message.message_id,
+                "prev_ts": prev_ts,
+            },
         )
+        return
     if action in {"reboot", "shutdown"}:
         secret = parts[1]
         entry = db["secrets"].get(secret)
