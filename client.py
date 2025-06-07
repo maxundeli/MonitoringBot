@@ -533,16 +533,20 @@ speedtest_running = False      # флаг «тест уже идёт»
 
 def _speedtest_job():
     global speedtest_running
-    push_text("⏳ Тестируем скорость…")
-    dl, ul, ping = run_speedtest()
-    if dl is not None:
-        push_text(
-            f"💨 Speedtest:\n"
-            f"↓ {dl:.1f} Mbit/s  ↑ {ul:.1f} Mbit/s  Ping {ping:.0f} ms"
-        )
-    else:
-        push_text("⚠️  Speedtest не удался.")
-    speedtest_running = False
+    try:
+        push_text("⏳ Тестируем скорость…")
+        dl, ul, ping = run_speedtest()
+        if dl is not None:
+            push_text(
+                f"💨 Speedtest:\n"
+                f"↓ {dl:.1f} Mbit/s  ↑ {ul:.1f} Mbit/s  Ping {ping:.0f} ms"
+            )
+        else:
+            push_text("⚠️  Speedtest не удался.")
+    except Exception as exc:
+        log.error("speedtest job error: %s", exc)
+    finally:
+        speedtest_running = False
 
 # ---------- diagnostics helper ----------
 diag_running = False
@@ -592,13 +596,17 @@ def push_diag(txt: str, ok: bool = True):
 
 def _diag_job():
     global diag_running
-    push_text("⏳ Собираем диагностику…")
-    out = run_diagnostics()
-    if out:
-        push_diag(out, ok=True)
-    else:
-        push_diag("", ok=False)
-    diag_running = False
+    try:
+        push_text("⏳ Собираем диагностику…")
+        out = run_diagnostics()
+        if out:
+            push_diag(out, ok=True)
+        else:
+            push_diag("", ok=False)
+    except Exception as exc:
+        log.error("diagnostics job error: %s", exc)
+    finally:
+        diag_running = False
 # ────── network layer: TLS TOFU + fingerprint pinning ────────────
 import ssl, socket, json, hashlib, pathlib, logging, requests
 from urllib.parse import urlparse
