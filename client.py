@@ -658,6 +658,7 @@ def _diag_job():
 import ssl, socket, json, hashlib, pathlib, logging, requests
 from urllib.parse import urlparse
 from requests.exceptions import SSLError
+import sys
 
 log      = logging.getLogger(__name__)
 session  = requests.Session()
@@ -680,8 +681,39 @@ def _fetch_cert_der(parsed) -> bytes:
         s.connect((host, port))
         return s.getpeercert(binary_form=True)
 
-def _request(method: str, url: str, **kwargs):
+def _mismatch_exit(pinned: str, new_fp: str) -> None:
+    msg = (
+        "\n❌ Ошибка TLS!\n"
+        f"• сохранён: {pinned}\n"
+        f"• получен: {new_fp}\n"
+        f"\nℹ️  Удалите файл {FP_FILE} и запустите агент заново, "
+        "чтобы доверить новому сертификату."
+    )
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("TLS ошибка", msg)
+    except Exception:
+        pass
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+def _ensure_fp(url: str) -> str:
     pinned = _load_fp()
+    cert_der = _fetch_cert_der(urlparse(url))
+    current_fp = _fingerprint(cert_der)
+    if pinned is None:
+        _save_fp(current_fp)
+        log.info("\ud83c\udf89  Cert saved, fp=%s\u2026", current_fp[:16])
+    elif pinned != current_fp:
+        _mismatch_exit(pinned, current_fp)
+    return current_fp
+
+def _request(method: str, url: str, **kwargs):
+    # проверяем отпечаток перед отправкой данных
+    pinned_before = _ensure_fp(url)
     try:
         resp = session.request(method, url, verify=False,
                                timeout=10, stream=True, **kwargs)
@@ -697,13 +729,9 @@ def _request(method: str, url: str, **kwargs):
 
     current_fp = _fingerprint(cert_der)
 
-    if pinned is None:
-        _save_fp(current_fp)
-        log.info("🎉  Cert saved, fp=%s…", current_fp[:16])
-    elif pinned != current_fp:
-        raise RuntimeError(
-            f"TLS fingerprint mismatch! old={pinned[:16]}… new={current_fp[:16]}…"
-        )
+    pinned = _load_fp()
+    if pinned != current_fp:
+        _mismatch_exit(pinned or pinned_before, current_fp)
 
     return resp
 
