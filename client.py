@@ -505,9 +505,22 @@ def gather_metrics() -> dict:
     }
 
 
+def _subprocess_flags() -> int:
+    """Return flags for subprocess to avoid extra windows on Windows."""
+    if platform.system() == "Windows":
+        return subprocess.CREATE_NO_WINDOW
+    return 0
+
+
 def run_speedtest() -> tuple[float | None, float | None, float | None]:
+    """Run a network speed test using any available backend."""
     try:
         if speedtest:
+            try:
+                # PyInstaller --noconsole workaround: disable library prints
+                speedtest.printer = lambda *a, **k: None
+            except Exception:
+                pass
             st = speedtest.Speedtest(secure=True)
             st.get_best_server()
             dl = st.download() / 1e6
@@ -516,9 +529,20 @@ def run_speedtest() -> tuple[float | None, float | None, float | None]:
 
         import shutil, subprocess, json
 
-        if shutil.which("speedtest"):
+        for prog in (
+            "speedtest",
+            "speedtest-cli",
+            "speedtest.exe",
+            "speedtest-cli.exe",
+        ):
+            path = shutil.which(prog)
+            if not path:
+                continue
             out = subprocess.check_output(
-                ["speedtest", "--format=json"], text=True, timeout=120
+                [path, "--format=json"],
+                text=True,
+                timeout=120,
+                creationflags=_subprocess_flags(),
             )
             data = json.loads(out)
             dl = data["download"]["bandwidth"] * 8 / 1e6
@@ -555,10 +579,16 @@ def run_diagnostics() -> str | None:
     """Collect diagnostics data using available system tools."""
     try:
         if platform.system() == "Windows":
-            if shutil.which("dxdiag"):
+            dxdiag = shutil.which("dxdiag") or shutil.which("dxdiag.exe")
+            if dxdiag:
                 tmp = Path(tempfile.gettempdir()) / "dxdiag.txt"
-                cmd = ["dxdiag", "/dontskip", "/whql:off", "/t", str(tmp)]
-                subprocess.run(cmd, check=True, timeout=120)
+                cmd = [dxdiag, "/dontskip", "/whql:off", "/t", str(tmp)]
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    timeout=120,
+                    creationflags=_subprocess_flags(),
+                )
                 try:
                     return tmp.read_text(encoding="utf-16")
                 except UnicodeError as exc:
@@ -568,15 +598,32 @@ def run_diagnostics() -> str | None:
                         return tmp.read_text(encoding=enc, errors="ignore")
                     except UnicodeError:
                         return tmp.read_text(encoding="utf-8", errors="ignore")
-            if shutil.which("systeminfo"):
-                out = subprocess.check_output(["systeminfo"], text=True, timeout=120, errors="ignore")
+            sysinfo = shutil.which("systeminfo") or shutil.which("systeminfo.exe")
+            if sysinfo:
+                out = subprocess.check_output(
+                    [sysinfo],
+                    text=True,
+                    timeout=120,
+                    errors="ignore",
+                    creationflags=_subprocess_flags(),
+                )
                 return out
 
         if shutil.which("inxi"):
-            out = subprocess.check_output(["inxi", "-F"], text=True, timeout=120)
+            out = subprocess.check_output(
+                ["inxi", "-F"],
+                text=True,
+                timeout=120,
+                creationflags=_subprocess_flags(),
+            )
             return out
         if shutil.which("lshw"):
-            out = subprocess.check_output(["lshw", "-short"], text=True, timeout=120)
+            out = subprocess.check_output(
+                ["lshw", "-short"],
+                text=True,
+                timeout=120,
+                creationflags=_subprocess_flags(),
+            )
             return out
     except Exception as exc:
         log.error("diagnostics failed: %s", exc)
