@@ -159,14 +159,20 @@ def gather_disks_metrics() -> List[dict]:
 
 
 def gather_top_processes(count: int = 5) -> List[dict]:
-    """Return top processes by CPU usage with their RAM usage."""
+    """Вернуть топ процессов по загрузке CPU с учётом RAM.
+
+    Процессы с одинаковым именем объединяются (суммируются их CPU и RAM).
+    """
+
     now = time.time()
-    res = []
+    aggregated: dict[str, dict[str, float | int]] = {}
+
     for p in psutil.process_iter(["pid", "name"]):
         try:
-            name = p.info.get("name") or str(p.pid)
-            if name.lower() == "system idle process":
+            name_raw = p.info.get("name") or str(p.pid)
+            if name_raw.lower() == "system idle process":
                 continue
+
             cpu_time = sum(p.cpu_times()[:2])
             prev = PROC_CACHE.get(p.pid)
             cpu = 0.0
@@ -175,11 +181,24 @@ def gather_top_processes(count: int = 5) -> List[dict]:
                 if dt > 0:
                     cpu = (cpu_time - prev[0]) / dt * 100
             PROC_CACHE[p.pid] = (cpu_time, now)
+
             mem = p.memory_info().rss
             cpu /= psutil.cpu_count() or 1
-            res.append({"name": name, "cpu": cpu, "ram": mem})
+
+            key = name_raw.lower()
+            agg = aggregated.setdefault(key, {"name": name_raw, "cpu": 0.0, "ram": 0, "count": 0})
+            agg["cpu"] += cpu
+            agg["ram"] += mem
+            agg["count"] += 1
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
+
+    res = []
+    for data in aggregated.values():
+        name = data["name"]
+        if data["count"] > 1:
+            name = f"{name} ({data['count']})"
+        res.append({"name": name, "cpu": data["cpu"], "ram": data["ram"]})
 
     res.sort(key=lambda x: x["cpu"], reverse=True)
     return res[:count]
