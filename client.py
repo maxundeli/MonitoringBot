@@ -237,6 +237,61 @@ def _cpu_temp_lhm_lib() -> str | None:
         log.warning("get_cpu_temp LHM failed: %s", e)
     return None
 
+def _cpu_temp_lhm_exe() -> str | None:
+    """Try running LibreHardwareMonitor.exe and read WMI sensors."""
+    if platform.system() != "Windows":
+        return None
+
+    exe_dir = Path(tempfile.gettempdir()) / "LibreHardwareMonitor"
+    exe = exe_dir / "LibreHardwareMonitor.exe"
+    if not exe.exists():
+        try:
+            url = (
+                "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/"
+                "releases/latest/download/LibreHardwareMonitor-net472.zip"
+            )
+            data = requests.get(url, timeout=10).content
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                for name in ("LibreHardwareMonitor.exe", "LibreHardwareMonitorLib.dll"):
+                    zf.extract(name, exe_dir)
+            log.info("get_cpu_temp: LibreHardwareMonitor.exe downloaded")
+        except Exception as e:
+            log.warning("get_cpu_temp: failed to fetch LHM exe: %s", e)
+            return None
+
+    # стартуем процесс, если он ещё не работает
+    if not any(
+        proc.info.get("name") == "LibreHardwareMonitor.exe"
+        for proc in psutil.process_iter(["name"])
+    ):
+        try:
+            creationflags = 0
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+            subprocess.Popen(
+                [str(exe)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+            time.sleep(3)
+        except Exception as e:
+            log.warning("get_cpu_temp: failed to run LHM exe: %s", e)
+            return None
+
+    try:
+        _ensure_wmi()
+        c = wmi.WMI(namespace="root\\LibreHardwareMonitor")
+        sensors = c.Sensor()
+        log.info("get_cpu_temp: LHM exe sensors=%d", len(sensors))
+        for s in sensors:
+            if s.SensorType == u"Temperature" and "cpu" in s.Name.lower():
+                log.info("get_cpu_temp via LHM exe: %s", s.Value)
+                return f"{s.Value:.1f} °C"
+    except Exception as e:
+        log.warning("get_cpu_temp LHM exe failed: %s", e)
+    return None
+
 def get_cpu_temp() -> str | None:
     log.info("get_cpu_temp: start on %s", platform.system())
 
@@ -348,8 +403,13 @@ def get_cpu_temp() -> str | None:
         except Exception as e:
             log.warning("get_cpu_temp powershell failed: %s", e)
 
+
     if platform.system() == "Windows":
         val = _cpu_temp_lhm_lib()
+        if val:
+            return val
+
+        val = _cpu_temp_lhm_exe()
         if val:
             return val
 
