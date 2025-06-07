@@ -25,6 +25,7 @@ import subprocess
 import tempfile
 import locale
 import psutil
+import heapq
 import requests
 from requests import Session
 from requests.exceptions import SSLError, ConnectionError
@@ -156,27 +157,51 @@ def gather_disks_metrics() -> List[dict]:
     return res
 
 
+_PROC_CACHE: dict[int, psutil.Process] = {}
+
+
 def gather_top_processes(count: int = 5) -> List[dict]:
     """Return top processes by CPU usage with their RAM usage."""
-    procs = []
-    plist = []
+    global _PROC_CACHE
+
+    # актуализируем кэш и собираем данные о загрузке CPU
+    current_pids = set()
+    proc_stats: list[tuple[float, psutil.Process]] = []
     for p in psutil.process_iter(['pid', 'name']):
         try:
-            p.cpu_percent(None)
-            plist.append(p)
+            name = p.info.get('name') or str(p.pid)
+            if name.lower() == 'system idle process':
+                continue
+            current_pids.add(p.pid)
+            if p.pid not in _PROC_CACHE:
+                # инициализируем счётчик
+                p.cpu_percent(None)
+                _PROC_CACHE[p.pid] = p
+                continue
+            cpu = p.cpu_percent(None)
+            proc_stats.append((cpu, p))
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-    time.sleep(0.1)
-    for p in plist:
+
+    # удаляем завершившиеся процессы из кэша
+    for pid in list(_PROC_CACHE):
+        if pid not in current_pids:
+            _PROC_CACHE.pop(pid, None)
+
+    # отбираем только несколько верхних процессов
+    top = heapq.nlargest(count, proc_stats, key=lambda x: x[0])
+    result = []
+    for cpu, p in top:
         try:
-            cpu = p.cpu_percent(None)
             mem = p.memory_info().rss
             name = p.info.get('name') or str(p.pid)
-            procs.append({'name': name, 'cpu': cpu, 'ram': mem})
+            if name.lower() == 'system idle process':
+                continue
+            result.append({'name': name, 'cpu': cpu, 'ram': mem})
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-    procs.sort(key=lambda x: x['cpu'], reverse=True)
-    return procs[:count]
+
+    return result
 
 def get_cpu_temp() -> str | None:
     # ── 1) стандартный psutil ─────────────────────────────

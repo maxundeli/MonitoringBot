@@ -307,8 +307,13 @@ def format_status(row: sqlite3.Row) -> str:
     if procs:
         lines.append("*━━━━━━━━━━━TOP CPU━━━━━━━━━━━*")
         for p in procs:
-            name = escape(p.get('name', '')[:20])
-            lines.append(f"⚙️ {name}: {p['cpu']:.1f}% {human_bytes(p['ram'])}")
+            name_raw = p.get('name', '')
+            if name_raw and name_raw.lower() == 'system idle process':
+                continue
+            name = escape(name_raw[:20])
+            lines.append(
+                f"⚙️ {name}: 🖥️ {p['cpu']:.1f}% 🧠 {human_bytes(p['ram'])}"
+            )
     if row['net_up'] is not None and row['net_down'] is not None:
         lines.extend([
             "*━━━━━━━━━━━NET━━━━━━━━━━━*",
