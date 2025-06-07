@@ -675,11 +675,10 @@ def _save_fp(fp: str) -> None:
 
 def _fetch_cert_der(parsed) -> bytes:
     host, port = parsed.hostname, parsed.port or 443
-    ctx = ssl.create_default_context()
-    with ctx.wrap_socket(socket.socket(), server_hostname=host) as s:
-        s.settimeout(5)
-        s.connect((host, port))
-        return s.getpeercert(binary_form=True)
+    ctx = ssl._create_unverified_context()
+    with socket.create_connection((host, port), timeout=5) as sock:
+        with ctx.wrap_socket(sock, server_hostname=host) as s:
+            return s.getpeercert(binary_form=True)
 
 def _mismatch_exit(pinned: str, new_fp: str) -> None:
     msg = (
