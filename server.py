@@ -9,6 +9,7 @@ import re
 import secrets
 from html import escape
 from telegram.constants import ParseMode
+from telegram.helpers import escape_markdown
 import time
 import sqlite3
 import string
@@ -344,7 +345,7 @@ def format_status(row: Mapping[str, Any]) -> str:
             name_raw = p.get('name', '')
             if name_raw and name_raw.lower() == 'system idle process':
                 continue
-            name = escape(name_raw[:20])
+            name = escape_markdown(name_raw[:20], version=1)
             lines.append(
                 f"⚙️ {name}: 🖥️ {p['cpu']:.1f}% 🧠 {human_bytes(p['ram'])}"
             )
@@ -369,8 +370,9 @@ def format_status(row: Mapping[str, Any]) -> str:
     if disks:
         lines.append("*━━━━━━━━━━━DISKS━━━━━━━━━━*")
         for d in disks:
+            mount = escape_markdown(d['mount'], version=1)
             line = (
-                f"💾 {d['mount']}: {disk_bar(d['percent'])} "
+                f"💾 {mount}: {disk_bar(d['percent'])} "
                 f"{d['percent']:.0f}% ({human_bytes(d['used'])} / {human_bytes(d['total'])})"
             )
             if d['percent'] >= 90:
