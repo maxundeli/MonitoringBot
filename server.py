@@ -773,7 +773,7 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("⏳ Получаем статус…")
         ctx.job_queue.run_repeating(
             callback=check_status_done,
-            interval=2,
+            interval=1,
             data={
                 "secret": secret,
                 "chat_id": q.message.chat_id,
