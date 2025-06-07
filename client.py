@@ -156,15 +156,28 @@ def gather_disks_metrics() -> List[dict]:
     return res
 
 def get_cpu_temp() -> str | None:
+    log.info("get_cpu_temp: start on %s", platform.system())
+
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+            admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+            log.info("get_cpu_temp: admin=%s wmi_present=%s", admin, bool(wmi))
+        except Exception as e:
+            log.warning("get_cpu_temp: failed to check admin rights: %s", e)
+
     # ── 1) стандартный psutil ─────────────────────────────
     try:
         temps = psutil.sensors_temperatures()
+        log.info("psutil.sensors_temperatures → %s", temps)
         if temps:
             for name in ("coretemp", "k10temp", "cpu_thermal"):
                 if name in temps and temps[name]:
-                    return f"{temps[name][0].current:.1f} °C"
-    except Exception:
-        pass
+                    t = temps[name][0].current
+                    log.info("get_cpu_temp via psutil: %s", t)
+                    return f"{t:.1f} °C"
+    except Exception as e:
+        log.warning("get_cpu_temp psutil failed: %s", e)
 
     # ── 2) Windows: Open/Libre Hardware Monitor через WMI ─
     if platform.system() == "Windows" and wmi:
@@ -173,22 +186,29 @@ def get_cpu_temp() -> str | None:
             try:
                 c = wmi.WMI(namespace=namespace)
                 sensors = c.Sensor()  # все датчики
+                log.info("get_cpu_temp: %s has %d sensors", namespace, len(sensors))
                 for s in sensors:
                     if s.SensorType == u"Temperature" and "CPU" in s.Name:
+                        log.info("get_cpu_temp via %s: %s", namespace, s.Value)
                         return f"{s.Value:.1f} °C"
-            except Exception:
+            except Exception as e:
+                log.warning("get_cpu_temp %s failed: %s", namespace, e)
                 continue
 
     # ── 3) Windows: стандартный датчик ACPI через WMI ──────
     if platform.system() == "Windows" and wmi:
         try:
             c = wmi.WMI(namespace="root\\WMI")
-            for t in c.MSAcpi_ThermalZoneTemperature():
+            sensors = c.MSAcpi_ThermalZoneTemperature()
+            log.info("get_cpu_temp: root\\WMI sensors=%d", len(sensors))
+            for t in sensors:
                 cur = getattr(t, "CurrentTemperature", None)
                 if cur:
-                    return f"{cur / 10 - 273.15:.1f} °C"
-        except Exception:
-            pass
+                    val = cur / 10 - 273.15
+                    log.info("get_cpu_temp via ACPI: %s", val)
+                    return f"{val:.1f} °C"
+        except Exception as e:
+            log.warning("get_cpu_temp ACPI failed: %s", e)
 
     # ── 4) Windows: wmic CLI fallback ───────────────────────
     if platform.system() == "Windows":
@@ -204,15 +224,19 @@ def get_cpu_temp() -> str | None:
                 ],
                 text=True,
                 timeout=2,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.STDOUT,
             )
+            log.info("get_cpu_temp wmic output: %s", out.strip())
             m = re.search(r"(\d+)", out)
             if m:
                 temp = int(m.group(1))
-                return f"{temp / 10 - 273.15:.1f} °C"
-        except Exception:
-            pass
+                val = temp / 10 - 273.15
+                log.info("get_cpu_temp via wmic: %s", val)
+                return f"{val:.1f} °C"
+        except Exception as e:
+            log.warning("get_cpu_temp wmic failed: %s", e)
 
+    log.info("get_cpu_temp: no data")
     return None
 def _nvidia_gpu_metrics() -> dict | None:
     """Try reading metrics using NVIDIA-specific tools."""
