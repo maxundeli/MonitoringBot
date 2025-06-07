@@ -303,6 +303,12 @@ def format_status(row: sqlite3.Row) -> str:
         f"🧠 RAM: {human_bytes(row['ram_used'])} / {human_bytes(row['ram_total'])} ({row['ram']:.1f}%)",
         f"🧠 SWAP: {human_bytes(row['swap_used'])} / {human_bytes(row['swap_total'])} ({row['swap']:.1f}%)",
     ]
+    procs = json.loads(row['top_procs']) if row['top_procs'] else []
+    if procs:
+        lines.append("*━━━━━━━━━━━TOP CPU━━━━━━━━━━━*")
+        for p in procs:
+            name = escape(p.get('name', '')[:20])
+            lines.append(f"⚙️ {name}: {p['cpu']:.1f}% {human_bytes(p['ram'])}")
     if row['net_up'] is not None and row['net_down'] is not None:
         lines.extend([
             "*━━━━━━━━━━━NET━━━━━━━━━━━*",
@@ -921,6 +927,7 @@ class PushPayload(BaseModel):
     net_down: float | None = None
     uptime: int | None = None
     disks: list[dict] | None = None
+    top_procs: list[dict] | None = None
     text: str | None = None
     diag: str | None = None
     diag_ok: bool | None = None

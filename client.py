@@ -155,6 +155,29 @@ def gather_disks_metrics() -> List[dict]:
 
     return res
 
+
+def gather_top_processes(count: int = 5) -> List[dict]:
+    """Return top processes by CPU usage with their RAM usage."""
+    procs = []
+    plist = []
+    for p in psutil.process_iter(['pid', 'name']):
+        try:
+            p.cpu_percent(None)
+            plist.append(p)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    time.sleep(0.1)
+    for p in plist:
+        try:
+            cpu = p.cpu_percent(None)
+            mem = p.memory_info().rss
+            name = p.info.get('name') or str(p.pid)
+            procs.append({'name': name, 'cpu': cpu, 'ram': mem})
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    procs.sort(key=lambda x: x['cpu'], reverse=True)
+    return procs[:count]
+
 def get_cpu_temp() -> str | None:
     # ── 1) стандартный psutil ─────────────────────────────
     try:
@@ -488,6 +511,7 @@ def gather_metrics() -> dict:
     uptime = int(time.time() - psutil.boot_time())
     gpu_data = gather_gpu_metrics() or {}
     disks = gather_disks_metrics()
+    top_procs = gather_top_processes()
     return {
         "cpu": cpu,
         "ram": mem.percent,
@@ -502,6 +526,7 @@ def gather_metrics() -> dict:
         "disks": disks,
         "net_up": net_up,
         "net_down": net_down,
+        "top_procs": top_procs,
     }
 
 

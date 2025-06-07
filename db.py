@@ -12,6 +12,7 @@ METRIC_DB = Path("metrics.sqlite")
 
 
 def _init_metric_db() -> sqlite3.Connection:
+    """Return connection to metrics DB, upgrading schema if needed."""
     con = sqlite3.connect(METRIC_DB, check_same_thread=False, isolation_level=None)
     con.row_factory = sqlite3.Row
     con.execute(
@@ -34,14 +35,18 @@ def _init_metric_db() -> sqlite3.Connection:
                net_up     REAL,
                net_down   REAL,
                uptime     INTEGER,
-               disks      TEXT
+               disks      TEXT,
+               top_procs  TEXT
         )"""
     )
+    # дополняем недостающие поля при обновлении версии
     cols = [r[1] for r in con.execute("PRAGMA table_info(metrics)")]
     if "net_up" not in cols:
         con.execute("ALTER TABLE metrics ADD COLUMN net_up REAL")
     if "net_down" not in cols:
         con.execute("ALTER TABLE metrics ADD COLUMN net_down REAL")
+    if "top_procs" not in cols:
+        con.execute("ALTER TABLE metrics ADD COLUMN top_procs TEXT")
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_metrics_secret_ts ON metrics(secret, ts)"
     )
@@ -62,8 +67,8 @@ def record_metric(secret: str, data: Dict[str, Any]):
                secret, ts, cpu, ram, gpu, vram,
                ram_used, ram_total, swap, swap_used, swap_total,
                vram_used, vram_total, cpu_temp, gpu_temp,
-               net_up, net_down, uptime, disks
-           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               net_up, net_down, uptime, disks, top_procs
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             secret,
             int(time.time()),
@@ -84,6 +89,7 @@ def record_metric(secret: str, data: Dict[str, Any]):
             data.get("net_down"),
             data.get("uptime"),
             json.dumps(data.get("disks")),
+            json.dumps(data.get("top_procs")),
         ),
     )
 
