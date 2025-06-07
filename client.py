@@ -819,6 +819,8 @@ def do_shutdown():
 
 log.info("Agent started → %s", SERVER)
 psutil.cpu_percent(interval=None)
+# инициализируем кэш процессов, чтобы первые /status не показывали 0%
+gather_top_processes()
 
 while True:
     metrics = gather_metrics()
