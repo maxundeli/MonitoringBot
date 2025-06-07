@@ -788,7 +788,7 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         # добавляем индикатор обновления, если ещё не добавлен
         orig = q.message.text or ""
-        prefixes = ("\u23F3 ", "\u231B ", "\u23F3\uFE0F")
+        prefixes = ("⏳ ", "⌛ ", "⏳️")
         if not any(orig.startswith(p) for p in prefixes):
             await q.edit_message_text(
                 text=f"⏳ Обновляем...\n{orig}",
