@@ -10,6 +10,7 @@ import re
 
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import numpy as np
 
 from db import fetch_metrics, fetch_metrics_full
@@ -98,6 +99,23 @@ def _make_figure(seconds: int):
     return fig, ax
 
 
+def _apply_time_locator(ax, seconds: int) -> None:
+    """Настроить частоту меток времени в зависимости от интервала."""
+    hours = seconds / 3600
+    if hours < 12:
+        return
+    if hours <= 48:
+        interval = 1
+    elif hours <= 96:
+        interval = 2
+    elif hours <= 7 * 24:
+        interval = 3
+    else:
+        interval = 6
+    ax.xaxis.set_major_locator(mdates.HourLocator(interval=interval))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %H:%M"))
+
+
 UNIT_NAMES_BITS = ["bit", "Kbit", "Mbit", "Gbit", "Tbit", "Pbit"]
 
 
@@ -157,6 +175,7 @@ def plot_metric(secret: str, metric: str, seconds: int):
     if ylim:
         ax.set_ylim(*ylim)
     ax.grid(True, linestyle="--", linewidth=0.3)
+    _apply_time_locator(ax, seconds)
     fig.autofmt_xdate()
 
     buf = io.BytesIO()
@@ -200,6 +219,7 @@ def plot_net(secret: str, seconds: int):
     if ylim_top is not None:
         ax.set_ylim(0, ylim_top)
     ax.grid(True, linestyle="--", linewidth=0.3)
+    _apply_time_locator(ax, seconds)
     ax.legend(loc="upper left", fontsize="small")
     fig.autofmt_xdate()
 
@@ -243,6 +263,7 @@ def plot_all_metrics(secret: str, seconds: int):
     ax.set_xlabel("Время")
     ax.set_ylabel("%")
     ax.grid(True, linestyle="--", linewidth=0.3)
+    _apply_time_locator(ax, seconds)
     ax.legend(loc="upper left", fontsize="small")
     fig.autofmt_xdate()
 
@@ -375,6 +396,7 @@ def plot_custom(secret: str, metrics: list[str], seconds: int, ylim_top: float |
         ax.set_ylim(0, ylim_top)
     ax.set_title(f"{'/'.join([l for _, l in data_sets])} за {timedelta(seconds=seconds)}")
     ax.grid(True, linestyle="--", linewidth=0.3)
+    _apply_time_locator(ax, seconds)
     if len(data_sets) > 1:
         ax.legend(loc="upper left", fontsize="small")
     fig.autofmt_xdate()
