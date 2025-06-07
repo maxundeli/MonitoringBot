@@ -340,7 +340,7 @@ def format_status(row: Mapping[str, Any]) -> str:
     ]
     procs = json.loads(row['top_procs']) if row['top_procs'] else []
     if procs:
-        lines.append("*━━━━━━━TOP CPU━━━━━━━*")
+        lines.append("*━━━━━━━━━TOP CPU━━━━━━━━━*")
         for p in procs:
             name_raw = p.get('name', '')
             if name_raw and name_raw.lower() == 'system idle process':
