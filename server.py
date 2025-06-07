@@ -591,10 +591,23 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     entry = db["secrets"].get(secret)
     if not entry or not is_owner(entry, update.effective_user.id):
         return await update.message.reply_text("🚫 Нет доступа.")
+    row = sql.execute(
+        "SELECT * FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
+        (secret,),
+    ).fetchone()
+
+    if row:
+        msg = await update.message.reply_text(
+            format_status(row),
+            parse_mode="Markdown",
+            reply_markup=status_keyboard(secret),
+        )
+    else:
+        msg = await update.message.reply_text("Нет данных от агента.")
+
     entry.setdefault("pending", []).append("status")
     save_db(db)
 
-    msg = await update.message.reply_text("⏳ Получаем статус…")
     ctx.job_queue.run_repeating(
         callback=check_status_done,
         interval=2,
@@ -770,9 +783,9 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         entry.setdefault("pending", []).append("status")
         save_db(db)
 
-        await q.edit_message_text("⏳ Получаем статус…")
         ctx.job_queue.run_repeating(
             callback=check_status_done,
+        # текст не меняем, обновление придёт при получении свежих данных
             interval=1,
             data={
                 "secret": secret,
