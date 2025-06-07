@@ -165,17 +165,28 @@ def get_cpu_temp() -> str | None:
             log.info("get_cpu_temp: admin=%s wmi_present=%s", admin, bool(wmi))
         except Exception as e:
             log.warning("get_cpu_temp: failed to check admin rights: %s", e)
+        if wmi is None:
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "wmi", "pywin32"], stdout=subprocess.DEVNULL)
+                import importlib
+                globals()["wmi"] = importlib.import_module("wmi")
+                log.info("get_cpu_temp: wmi module installed")
+            except Exception as e:
+                log.warning("get_cpu_temp: failed to install wmi: %s", e)
 
     # ── 1) стандартный psutil ─────────────────────────────
     try:
-        temps = psutil.sensors_temperatures()
-        log.info("psutil.sensors_temperatures → %s", temps)
-        if temps:
-            for name in ("coretemp", "k10temp", "cpu_thermal"):
-                if name in temps and temps[name]:
-                    t = temps[name][0].current
-                    log.info("get_cpu_temp via psutil: %s", t)
-                    return f"{t:.1f} °C"
+        if hasattr(psutil, "sensors_temperatures"):
+            temps = psutil.sensors_temperatures()
+            log.info("psutil.sensors_temperatures → %s", temps)
+            if temps:
+                for name in ("coretemp", "k10temp", "cpu_thermal"):
+                    if name in temps and temps[name]:
+                        t = temps[name][0].current
+                        log.info("get_cpu_temp via psutil: %s", t)
+                        return f"{t:.1f} °C"
+        else:
+            log.warning("get_cpu_temp: psutil lacks sensors_temperatures")
     except Exception as e:
         log.warning("get_cpu_temp psutil failed: %s", e)
 
@@ -225,6 +236,7 @@ def get_cpu_temp() -> str | None:
                 text=True,
                 timeout=2,
                 stderr=subprocess.STDOUT,
+                errors="ignore",
             )
             log.info("get_cpu_temp wmic output: %s", out.strip())
             m = re.search(r"(\d+)", out)
@@ -235,6 +247,30 @@ def get_cpu_temp() -> str | None:
                 return f"{val:.1f} °C"
         except Exception as e:
             log.warning("get_cpu_temp wmic failed: %s", e)
+
+    # ── 5) Windows: PowerShell fallback ─────────────────────
+    if platform.system() == "Windows":
+        try:
+            ps_cmd = (
+                "Get-WmiObject -Namespace root\\wmi -Class MSAcpi_ThermalZoneTemperature | "
+                "Select-Object -ExpandProperty CurrentTemperature"
+            )
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                text=True,
+                timeout=3,
+                stderr=subprocess.STDOUT,
+                errors="ignore",
+            )
+            log.info("get_cpu_temp powershell output: %s", out.strip())
+            m = re.search(r"(\d+)", out)
+            if m:
+                temp = int(m.group(1))
+                val = temp / 10 - 273.15
+                log.info("get_cpu_temp via powershell: %s", val)
+                return f"{val:.1f} °C"
+        except Exception as e:
+            log.warning("get_cpu_temp powershell failed: %s", e)
 
     log.info("get_cpu_temp: no data")
     return None
