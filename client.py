@@ -506,6 +506,7 @@ def gather_metrics() -> dict:
 
 
 def run_speedtest() -> tuple[float | None, float | None, float | None]:
+    """Run a network speed test using any available backend."""
     try:
         if speedtest:
             st = speedtest.Speedtest(secure=True)
@@ -516,9 +517,17 @@ def run_speedtest() -> tuple[float | None, float | None, float | None]:
 
         import shutil, subprocess, json
 
-        if shutil.which("speedtest"):
+        for prog in (
+            "speedtest",
+            "speedtest-cli",
+            "speedtest.exe",
+            "speedtest-cli.exe",
+        ):
+            path = shutil.which(prog)
+            if not path:
+                continue
             out = subprocess.check_output(
-                ["speedtest", "--format=json"], text=True, timeout=120
+                [path, "--format=json"], text=True, timeout=120
             )
             data = json.loads(out)
             dl = data["download"]["bandwidth"] * 8 / 1e6
@@ -555,9 +564,10 @@ def run_diagnostics() -> str | None:
     """Collect diagnostics data using available system tools."""
     try:
         if platform.system() == "Windows":
-            if shutil.which("dxdiag"):
+            dxdiag = shutil.which("dxdiag") or shutil.which("dxdiag.exe")
+            if dxdiag:
                 tmp = Path(tempfile.gettempdir()) / "dxdiag.txt"
-                cmd = ["dxdiag", "/dontskip", "/whql:off", "/t", str(tmp)]
+                cmd = [dxdiag, "/dontskip", "/whql:off", "/t", str(tmp)]
                 subprocess.run(cmd, check=True, timeout=120)
                 try:
                     return tmp.read_text(encoding="utf-16")
@@ -568,8 +578,9 @@ def run_diagnostics() -> str | None:
                         return tmp.read_text(encoding=enc, errors="ignore")
                     except UnicodeError:
                         return tmp.read_text(encoding="utf-8", errors="ignore")
-            if shutil.which("systeminfo"):
-                out = subprocess.check_output(["systeminfo"], text=True, timeout=120, errors="ignore")
+            sysinfo = shutil.which("systeminfo") or shutil.which("systeminfo.exe")
+            if sysinfo:
+                out = subprocess.check_output([sysinfo], text=True, timeout=120, errors="ignore")
                 return out
 
         if shutil.which("inxi"):
