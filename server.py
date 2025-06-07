@@ -19,7 +19,7 @@ import sys
 import threading
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Mapping
 
 import matplotlib
 import uvicorn
@@ -49,6 +49,8 @@ API_PORT = int(os.getenv("PORT", "8000"))
 LATEST_TEXT: Dict[str, str] = {}
 # диагностические отчёты, отправляемые агентом
 LATEST_DIAG: Dict[str, Optional[str]] = {}
+# временные метрики, отправляемые командой /status
+LATEST_STATUS: Dict[str, Dict[str, Any]] = {}
 _MISSING = object()
 
 # ссылка на экземпляр Telegram-приложения для отправки уведомлений
@@ -245,14 +247,9 @@ async def check_status_done(ctx: ContextTypes.DEFAULT_TYPE):
     secret = data["secret"]
     chat_id = data["chat_id"]
     msg_id = data["msg_id"]
-    prev_ts = data["prev_ts"]
 
-    row = sql.execute(
-        "SELECT * FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
-        (secret,),
-    ).fetchone()
-
-    if not row or row["ts"] <= prev_ts:
+    row = LATEST_STATUS.pop(secret, None)
+    if not row:
         start_ts = data.setdefault("start_ts", time.time())
         if time.time() - start_ts > 15:
             await ctx.bot.edit_message_text(
@@ -327,7 +324,9 @@ def gen_secret(n: int = 20):
 def is_owner(entry: Dict[str, Any], user_id: int) -> bool:
     return user_id in entry.get("owners", [])
 
-def format_status(row: sqlite3.Row) -> str:
+from typing import Mapping
+
+def format_status(row: Mapping[str, Any]) -> str:
     lines = [
         "💻 *PC stats*",
         f"⏳ Uptime: {timedelta(seconds=int(row['uptime'] or 0))}",
@@ -588,12 +587,6 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     secret = resolve_secret(update, ctx)
     if not secret:
         return await update.message.reply_text("Нет доступа или активного ключа.")
-    row = sql.execute(
-        "SELECT ts FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
-        (secret,),
-    ).fetchone()
-    prev_ts = row[0] if row else 0
-
     db = load_db()
     entry = db["secrets"].get(secret)
     if not entry or not is_owner(entry, update.effective_user.id):
@@ -609,7 +602,6 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "secret": secret,
             "chat_id": msg.chat_id,
             "msg_id": msg.message_id,
-            "prev_ts": prev_ts,
         },
     )
 
@@ -775,12 +767,6 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not entry or not is_owner(entry, q.from_user.id):
             return await q.edit_message_text("🚫 Нет доступа.")
 
-        row = sql.execute(
-            "SELECT ts FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
-            (secret,),
-        ).fetchone()
-        prev_ts = row[0] if row else 0
-
         entry.setdefault("pending", []).append("status")
         save_db(db)
 
@@ -792,7 +778,6 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "secret": secret,
                 "chat_id": q.message.chat_id,
                 "msg_id": q.message.message_id,
-                "prev_ts": prev_ts,
             },
         )
         return
@@ -996,6 +981,7 @@ class PushPayload(BaseModel):
     uptime: int | None = None
     disks: list[dict] | None = None
     top_procs: list[dict] | None = None
+    oneshot: bool | None = None
     text: str | None = None
     diag: str | None = None
     diag_ok: bool | None = None
@@ -1014,6 +1000,16 @@ async def push(secret: str, payload: PushPayload):
         return {"ok": True}
 
     if payload.cpu is None or payload.ram is None:
+        return {"ok": True}
+
+    if payload.oneshot:
+        data = payload.model_dump()
+        data.pop("oneshot", None)
+        data["disks"] = json.dumps(data.get("disks") or [])
+        data["top_procs"] = json.dumps(data.get("top_procs") or [])
+        data["ts"] = int(time.time())
+        LATEST_STATUS[secret] = data
+        await maybe_send_alerts(secret, data)
         return {"ok": True}
 
     record_metric(secret, payload.model_dump())

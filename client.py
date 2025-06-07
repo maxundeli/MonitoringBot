@@ -157,52 +157,34 @@ def gather_disks_metrics() -> List[dict]:
     return res
 
 
-_PROC_CACHE: dict[int, psutil.Process] = {}
-
-
 def gather_top_processes(count: int = 5) -> List[dict]:
     """Return top processes by CPU usage with their RAM usage."""
-    global _PROC_CACHE
-
-    # актуализируем кэш и собираем данные о загрузке CPU
-    current_pids = set()
-    proc_stats: list[tuple[float, psutil.Process]] = []
-    for p in psutil.process_iter(['pid', 'name']):
+    procs = []
+    for p in psutil.process_iter(["pid", "name"]):
         try:
-            name = p.info.get('name') or str(p.pid)
-            if name.lower() == 'system idle process':
+            name = p.info.get("name") or str(p.pid)
+            if name.lower() == "system idle process":
                 continue
-            current_pids.add(p.pid)
-            if p.pid not in _PROC_CACHE:
-                # инициализируем счётчик
-                p.cpu_percent(None)
-                _PROC_CACHE[p.pid] = p
-                continue
+            p.cpu_percent(None)
+            procs.append(p)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    time.sleep(0.1)
+
+    results = []
+    for p in procs:
+        try:
             cpu = p.cpu_percent(None)
             cpu /= psutil.cpu_count() or 1
-            proc_stats.append((cpu, p))
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-
-    # удаляем завершившиеся процессы из кэша
-    for pid in list(_PROC_CACHE):
-        if pid not in current_pids:
-            _PROC_CACHE.pop(pid, None)
-
-    # отбираем только несколько верхних процессов
-    top = heapq.nlargest(count, proc_stats, key=lambda x: x[0])
-    result = []
-    for cpu, p in top:
-        try:
             mem = p.memory_info().rss
-            name = p.info.get('name') or str(p.pid)
-            if name.lower() == 'system idle process':
-                continue
-            result.append({'name': name, 'cpu': cpu, 'ram': mem})
+            name = p.info.get("name") or str(p.pid)
+            results.append({"name": name, "cpu": cpu, "ram": mem})
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-    return result
+    results.sort(key=lambda x: x["cpu"], reverse=True)
+    return results[:count]
 
 def get_cpu_temp() -> str | None:
     # ── 1) стандартный psutil ─────────────────────────────
@@ -796,9 +778,12 @@ def push_text(txt: str):
         log.error("push error: %s", e)
 
 
-def push_metrics(data: dict):
+def push_metrics(data: dict, oneshot: bool = False):
+    payload = dict(data)
+    if oneshot:
+        payload["oneshot"] = True
     try:
-        r = _request("POST", f"{SERVER}/api/push/{SECRET}", json=data)
+        r = _request("POST", f"{SERVER}/api/push/{SECRET}", json=payload)
         r.raise_for_status()
     except Exception as e:
         log.error("push error: %s", e)
@@ -862,5 +847,5 @@ while True:
                 push_text("🚧 Диагностика уже выполняется, дождитесь окончания.")
         elif c == "status":
             log.info("cmd status")
-            push_metrics(gather_metrics(full=True))
+            push_metrics(gather_metrics(full=True), oneshot=True)
     time.sleep(INTERVAL)
