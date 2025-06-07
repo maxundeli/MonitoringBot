@@ -29,7 +29,7 @@ The server stores incoming data in SQLite and can generate on‑demand plots del
 
 ### Clone the repository
 ```bash
-git clone https://github.com/loshara131313/MonitoringBot
+git clone https://github.com/maxundeli/MonitoringBot
 cd MonitoringBot
 ```
 
