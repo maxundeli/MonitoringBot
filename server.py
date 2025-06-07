@@ -19,7 +19,7 @@ import sys
 import threading
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Mapping
 
 import matplotlib
 import uvicorn
@@ -49,6 +49,8 @@ API_PORT = int(os.getenv("PORT", "8000"))
 LATEST_TEXT: Dict[str, str] = {}
 # диагностические отчёты, отправляемые агентом
 LATEST_DIAG: Dict[str, Optional[str]] = {}
+# временные метрики, отправляемые командой /status
+LATEST_STATUS: Dict[str, Dict[str, Any]] = {}
 _MISSING = object()
 
 # ссылка на экземпляр Telegram-приложения для отправки уведомлений
@@ -238,6 +240,36 @@ async def check_diag_done(ctx: ContextTypes.DEFAULT_TYPE):
     job.schedule_removal()
 
 
+async def check_status_done(ctx: ContextTypes.DEFAULT_TYPE):
+    job = ctx.job
+    data = job.data
+
+    secret = data["secret"]
+    chat_id = data["chat_id"]
+    msg_id = data["msg_id"]
+
+    row = LATEST_STATUS.pop(secret, None)
+    if not row:
+        start_ts = data.setdefault("start_ts", time.time())
+        if time.time() - start_ts > 15:
+            await ctx.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text="⚠️ Статус не получен.",
+            )
+            job.schedule_removal()
+        return
+
+    await ctx.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=msg_id,
+        text=format_status(row),
+        parse_mode="Markdown",
+        reply_markup=status_keyboard(secret),
+    )
+    job.schedule_removal()
+
+
 
 async def _purge_loop():
     while True:
@@ -292,7 +324,9 @@ def gen_secret(n: int = 20):
 def is_owner(entry: Dict[str, Any], user_id: int) -> bool:
     return user_id in entry.get("owners", [])
 
-def format_status(row: sqlite3.Row) -> str:
+from typing import Mapping
+
+def format_status(row: Mapping[str, Any]) -> str:
     lines = [
         "💻 *PC stats*",
         f"⏳ Uptime: {timedelta(seconds=int(row['uptime'] or 0))}",
@@ -307,8 +341,13 @@ def format_status(row: sqlite3.Row) -> str:
     if procs:
         lines.append("*━━━━━━━━━━━TOP CPU━━━━━━━━━━━*")
         for p in procs:
-            name = escape(p.get('name', '')[:20])
-            lines.append(f"⚙️ {name}: {p['cpu']:.1f}% {human_bytes(p['ram'])}")
+            name_raw = p.get('name', '')
+            if name_raw and name_raw.lower() == 'system idle process':
+                continue
+            name = escape(name_raw[:20])
+            lines.append(
+                f"⚙️ {name}: 🖥️ {p['cpu']:.1f}% 🧠 {human_bytes(p['ram'])}"
+            )
     if row['net_up'] is not None and row['net_down'] is not None:
         lines.extend([
             "*━━━━━━━━━━━NET━━━━━━━━━━━*",
@@ -548,14 +587,35 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     secret = resolve_secret(update, ctx)
     if not secret:
         return await update.message.reply_text("Нет доступа или активного ключа.")
+    db = load_db()
+    entry = db["secrets"].get(secret)
+    if not entry or not is_owner(entry, update.effective_user.id):
+        return await update.message.reply_text("🚫 Нет доступа.")
     row = sql.execute(
         "SELECT * FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
         (secret,),
     ).fetchone()
-    if not row:
-        return await update.message.reply_text("Нет данных от агента.")
-    await update.message.reply_text(
-        format_status(row), parse_mode="Markdown", reply_markup=status_keyboard(secret)
+
+    if row:
+        msg = await update.message.reply_text(
+            format_status(row),
+            parse_mode="Markdown",
+            reply_markup=status_keyboard(secret),
+        )
+    else:
+        msg = await update.message.reply_text("Нет данных от агента.")
+
+    entry.setdefault("pending", []).append("status")
+    save_db(db)
+
+    ctx.job_queue.run_repeating(
+        callback=check_status_done,
+        interval=2,
+        data={
+            "secret": secret,
+            "chat_id": msg.chat_id,
+            "msg_id": msg.message_id,
+        },
     )
 
 async def cmd_setalert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -719,15 +779,31 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         entry = db["secrets"].get(secret)
         if not entry or not is_owner(entry, q.from_user.id):
             return await q.edit_message_text("🚫 Нет доступа.")
-        row = sql.execute(
-            "SELECT * FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
-            (secret,),
-        ).fetchone()
-        if not row:
-            return await q.edit_message_text("Нет данных от агента.")
-        return await q.edit_message_text(
-            format_status(row), parse_mode="Markdown", reply_markup=status_keyboard(secret)
+
+
+        entry.setdefault("pending", []).append("status")
+        save_db(db)
+
+        ctx.job_queue.run_repeating(
+            callback=check_status_done,
+            interval=2,
+            data={
+                "secret": secret,
+                "chat_id": q.message.chat_id,
+                "msg_id": q.message.message_id,
+            },
         )
+
+        # добавляем индикатор обновления, если ещё не добавлен
+        orig = q.message.text or ""
+        prefixes = ("⏳ ", "⌛ ", "⏳️")
+        if not any(orig.startswith(p) for p in prefixes):
+            await q.edit_message_text(
+                text=f"⏳ Обновляем...\n{orig}",
+                parse_mode="Markdown",
+                reply_markup=q.message.reply_markup,
+            )
+        return
     if action in {"reboot", "shutdown"}:
         secret = parts[1]
         entry = db["secrets"].get(secret)
@@ -928,6 +1004,7 @@ class PushPayload(BaseModel):
     uptime: int | None = None
     disks: list[dict] | None = None
     top_procs: list[dict] | None = None
+    oneshot: bool | None = None
     text: str | None = None
     diag: str | None = None
     diag_ok: bool | None = None
@@ -946,6 +1023,16 @@ async def push(secret: str, payload: PushPayload):
         return {"ok": True}
 
     if payload.cpu is None or payload.ram is None:
+        return {"ok": True}
+
+    if payload.oneshot:
+        data = payload.model_dump()
+        data.pop("oneshot", None)
+        data["disks"] = json.dumps(data.get("disks") or [])
+        data["top_procs"] = json.dumps(data.get("top_procs") or [])
+        data["ts"] = int(time.time())
+        LATEST_STATUS[secret] = data
+        await maybe_send_alerts(secret, data)
         return {"ok": True}
 
     record_metric(secret, payload.model_dump())

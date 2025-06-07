@@ -88,8 +88,8 @@ def record_metric(secret: str, data: Dict[str, Any]):
             data.get("net_up"),
             data.get("net_down"),
             data.get("uptime"),
-            json.dumps(data.get("disks")),
-            json.dumps(data.get("top_procs")),
+            None,
+            None,
         ),
     )
 
