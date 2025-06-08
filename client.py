@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging, threading
 import os
 import platform
+import atexit
 try:
     import wmi
 except ImportError:
@@ -27,12 +28,15 @@ import locale
 import psutil
 # Кэш для вычисления CPU без задержки
 PROC_CACHE: dict[int, tuple[float, float]] = {}
+GPU_VENDOR: str | None = None
+GPU_METRIC_FUNCS: list = []
+NVML_INITED = False
+NVML_HANDLE = None
 import requests
 from requests import Session
 from requests.exceptions import SSLError, ConnectionError
 try:
     import pynvml
-    pynvml.nvmlInit()
 except Exception:
     pynvml = None
 
@@ -230,22 +234,21 @@ def get_cpu_temp() -> str | None:
     return None
 def _nvidia_gpu_metrics() -> dict | None:
     """Try reading metrics using NVIDIA-specific tools."""
-    try:
-        import pynvml
-        pynvml.nvmlInit()
-        h = pynvml.nvmlDeviceGetHandleByIndex(0)
-        util = pynvml.nvmlDeviceGetUtilizationRates(h).gpu
-        mem = pynvml.nvmlDeviceGetMemoryInfo(h)
-        temp = pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU)
-        return {
-            "gpu": util,
-            "vram_used": mem.used / 2 ** 20,
-            "vram_total": mem.total / 2 ** 20,
-            "vram": mem.used / mem.total * 100 if mem.total else None,
-            "gpu_temp": float(temp),
-        }
-    except Exception:
-        pass
+    if pynvml and NVML_INITED:
+        try:
+            h = NVML_HANDLE or pynvml.nvmlDeviceGetHandleByIndex(0)
+            util = pynvml.nvmlDeviceGetUtilizationRates(h).gpu
+            mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+            temp = pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU)
+            return {
+                "gpu": util,
+                "vram_used": mem.used / 2 ** 20,
+                "vram_total": mem.total / 2 ** 20,
+                "vram": mem.used / mem.total * 100 if mem.total else None,
+                "gpu_temp": float(temp),
+            }
+        except Exception:
+            pass
 
     if shutil.which("nvidia-smi"):
         try:
@@ -476,18 +479,52 @@ def detect_gpu_vendor() -> str | None:
     return None
 
 
-def gather_gpu_metrics() -> dict | None:
-    vendor = detect_gpu_vendor()
-    if vendor == "nvidia":
-        return _nvidia_gpu_metrics()
-    if vendor == "amd":
-        return _amd_gpu_metrics()
+def init_gpu_metrics() -> None:
+    """Определить производителя GPU и рабочие функции чтения метрик."""
+    global GPU_VENDOR, GPU_METRIC_FUNCS, NVML_INITED, NVML_HANDLE
 
-    # неизвестно – пробуем всё подряд
-    for fn in (_nvidia_gpu_metrics, _amd_gpu_metrics):
-        data = fn()
-        if data:
-            return data
+    GPU_VENDOR = detect_gpu_vendor()
+
+    candidates = []
+    if GPU_VENDOR == "nvidia":
+        candidates = [_nvidia_gpu_metrics]
+    elif GPU_VENDOR == "amd":
+        candidates = [_amd_gpu_metrics]
+    else:
+        candidates = [_nvidia_gpu_metrics, _amd_gpu_metrics]
+
+    GPU_METRIC_FUNCS = []
+
+    if GPU_VENDOR == "nvidia" and pynvml:
+        try:
+            pynvml.nvmlInit()
+            NVML_INITED = True
+            NVML_HANDLE = pynvml.nvmlDeviceGetHandleByIndex(0)
+            atexit.register(pynvml.nvmlShutdown)
+        except Exception:
+            NVML_INITED = False
+            NVML_HANDLE = None
+
+    for fn in candidates:
+        try:
+            data = fn()
+            if data:
+                GPU_METRIC_FUNCS.append(fn)
+        except Exception:
+            continue
+
+    if not GPU_METRIC_FUNCS:
+        GPU_METRIC_FUNCS = candidates
+
+
+def gather_gpu_metrics() -> dict | None:
+    for fn in GPU_METRIC_FUNCS:
+        try:
+            data = fn()
+            if data:
+                return data
+        except Exception:
+            continue
     return None
 
 # ──────────────────────── network usage ─────────────────────────-
@@ -840,6 +877,7 @@ log.info("Agent started → %s", SERVER)
 psutil.cpu_percent(interval=None)
 # инициализируем кэш процессов, чтобы первые /status не показывали 0%
 gather_top_processes()
+init_gpu_metrics()
 
 while True:
     metrics = gather_metrics()
