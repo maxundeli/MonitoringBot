@@ -782,6 +782,30 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not entry or not is_owner(entry, q.from_user.id):
             return await q.edit_message_text("🚫 Нет доступа.")
 
+        row = sql.execute(
+            "SELECT * FROM metrics WHERE secret=? ORDER BY ts DESC LIMIT 1",
+            (secret,),
+        ).fetchone()
+
+        orig = q.message.text or ""
+        prefixes = ("💻", "⏳", "Нет данных", "⚠️")
+        from_status = any(orig.startswith(p) for p in prefixes)
+
+        if from_status:
+            await q.edit_message_text(
+                text=f"⏳ Обновляем...\n{orig}",
+                parse_mode="Markdown",
+                reply_markup=q.message.reply_markup,
+            )
+        else:
+            if row:
+                await q.edit_message_text(
+                    format_status(row),
+                    parse_mode="Markdown",
+                    reply_markup=status_keyboard(secret),
+                )
+            else:
+                await q.edit_message_text("Нет данных от агента.")
 
         entry.setdefault("pending", []).append("status")
         save_db(db)
@@ -795,16 +819,6 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "msg_id": q.message.message_id,
             },
         )
-
-        # добавляем индикатор обновления, если ещё не добавлен
-        orig = q.message.text or ""
-        prefixes = ("⏳ ", "⌛ ", "⏳️")
-        if not any(orig.startswith(p) for p in prefixes):
-            await q.edit_message_text(
-                text=f"⏳ Обновляем...\n{orig}",
-                parse_mode="Markdown",
-                reply_markup=q.message.reply_markup,
-            )
         return
     if action in {"reboot", "shutdown"}:
         secret = parts[1]
