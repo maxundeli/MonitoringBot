@@ -27,6 +27,7 @@ import locale
 import psutil
 # Кэш для вычисления CPU без задержки
 PROC_CACHE: dict[int, tuple[float, float]] = {}
+CPU_CORES = psutil.cpu_count(logical=False) or psutil.cpu_count() or 1
 import requests
 from requests import Session
 from requests.exceptions import SSLError, ConnectionError
@@ -183,7 +184,7 @@ def gather_top_processes(count: int = 5) -> List[dict]:
             PROC_CACHE[p.pid] = (cpu_time, now)
 
             mem = p.memory_info().rss
-            cpu /= psutil.cpu_count() or 1
+            cpu /= CPU_CORES
 
             key = name_raw.lower()
             agg = aggregated.setdefault(key, {"name": name_raw, "cpu": 0.0, "ram": 0, "count": 0})
