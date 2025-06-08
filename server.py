@@ -156,6 +156,10 @@ def best_unit(max_val_bytes: float) -> tuple[float, str]:
 def disk_bar(p: float, length: int = 10) -> str:
     filled = int(round(p * length / 100))
     return "█" * filled + "░" * (length - filled)
+
+async def run_plot(func, *args):
+    """Run plotting function in a thread."""
+    return await asyncio.to_thread(func, *args)
 async def check_speedtest_done(ctx: ContextTypes.DEFAULT_TYPE):
     job  = ctx.job
     data = job.data
@@ -969,13 +973,13 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         secret = parts[3]
 
         if metric == "all":
-            buf = plot_all_metrics(secret, seconds)
+            buf = await run_plot(plot_all_metrics, secret, seconds)
             caption = f"Все метрики за {timedelta(seconds=seconds)}"
         elif metric == "net":
-            buf = plot_net(secret, seconds)
+            buf = await run_plot(plot_net, secret, seconds)
             caption = f"NET за {timedelta(seconds=seconds)}"
         else:
-            buf = plot_metric(secret, metric, seconds)
+            buf = await run_plot(plot_metric, secret, metric, seconds)
             caption = f"{metric.upper()} за {timedelta(seconds=seconds)}"
 
         if not buf:
