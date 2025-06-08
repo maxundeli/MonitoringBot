@@ -794,7 +794,6 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if from_status:
             await q.edit_message_text(
                 text=f"⏳ Обновляем...\n{orig}",
-                parse_mode="Markdown",
                 reply_markup=q.message.reply_markup,
             )
         else:
