@@ -15,10 +15,11 @@ The server stores incoming data in SQLite and can generate on‑demand plots del
 
 ## Key Features
 * **Metric collection** – CPU and GPU load, memory usage, per‑disk utilisation and system uptime.
-* **Secure communication** – HTTPS with automatically generated self‑signed certificates (fallback to HTTP for testing).
+* **Secure communication** – WebSocket over TLS with automatically generated self‑signed certificates (fallback to WS for testing).
 * **Telegram integration** – Inline commands for status queries and remote actions (reboot / shutdown).
 * **Data persistence** – Lightweight storage using SQLite; suitable for single‑instance deployments.
-* **Visualisation** – Matplotlib charts returned directly in chat.
+* **WebSocket transport** – persistent bidirectional connection lets the server trigger tasks like speed tests instantly and receive full status without delay.
+* **Visualization** – Matplotlib charts returned directly in chat.
 
 ## Installation
 
@@ -81,7 +82,7 @@ python -m client
 | Variable | Component | Default | Purpose |
 |----------|-----------|---------|---------|
 | `BOT_TOKEN` | server | — | Telegram bot token (required) |
-| `PORT` | server | 8000 | HTTP(S) listening port |
+| `PORT` | server | 8000 | WebSocket listening port |
 | `AGENT_SECRET` | client | — | Secret linking agent to server |
 | `AGENT_SERVER_IP` | client | prompt | Server IPv4 address |
 | `AGENT_PORT` | client | 8000 | Server port |
