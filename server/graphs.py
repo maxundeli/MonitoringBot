@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import numpy as np
 
-from db import fetch_metrics, fetch_metrics_full
+from .db import fetch_metrics, fetch_metrics_full
 
 # matplotlib без X-сервера
 

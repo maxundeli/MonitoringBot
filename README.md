@@ -8,8 +8,8 @@ MonitoringBot consists of:
 
 | Component | Description |
 |-----------|-------------|
-| **server.py** | FastAPI application that receives, stores and visualises metrics. Integrates with a Telegram bot for user interaction. |
-| **client.py** | Cross‑platform agent that collects host metrics (CPU, RAM, GPU, VRAM, disk, uptime) and periodically pushes them to the server. |
+| **server/** | FastAPI application that receives, stores and visualises metrics. Integrates with a Telegram bot for user interaction. Run with `python -m server`. |
+| **client/** | Cross‑platform agent that collects host metrics (CPU, RAM, GPU, VRAM, disk, uptime) and periodically pushes them to the server. Run with `python -m client`. |
 
 The server stores incoming data in SQLite and can generate on‑demand plots delivered via Telegram.
 
@@ -50,7 +50,7 @@ pip install -r requirements.txt
 Set the required environment variables and start the FastAPI application:
 ```bash
 export BOT_TOKEN="<telegram‑bot‑token>"
-python server.py
+python -m server
 ```
 The first launch generates `cert.pem` and `key.pem` for TLS.
 
@@ -65,7 +65,7 @@ This returns a unique token for the host.
 ```bash
 export AGENT_SECRET="<token from /newkey>"
 export AGENT_SERVER_IP="<server IPv4 address>"
-python client.py
+python -m client
 ```
 
 ### 4. Interact through Telegram
@@ -100,10 +100,13 @@ accepting unexpected certificates.
 ## Project Structure
 ```
 MonitoringBot/
-├── client.py
-├── server.py  # main server
-├── db.py      # DB helper
-├── graphs.py  # graphs building
+├── client/
+│   ├── __main__.py  # client entry point
+│   └── worker.py    # heavy tasks
+├── server/
+│   ├── __main__.py  # main server
+│   ├── db.py        # DB helper
+│   └── graphs.py    # graphs building
 ├── requirements.txt
 └── README.md
 ```

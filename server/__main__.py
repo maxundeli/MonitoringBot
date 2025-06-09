@@ -39,8 +39,8 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from db import sql, load_db, save_db, record_metric, purge_old_metrics
-from graphs import (
+from .db import sql, load_db, save_db, record_metric, purge_old_metrics
+from .graphs import (
     parse_timespan,
     plot_custom,
     plot_metric,
@@ -50,7 +50,7 @@ from graphs import (
 )
 
 # ────────────────────────── CONFIG ─────────────────────────────────────────
-ENV_FILE = Path(".env")
+ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 API_PORT = int(os.getenv("PORT", "8000"))
 
 # последний текстовый статус от клиентов (speedtest и пр.)
