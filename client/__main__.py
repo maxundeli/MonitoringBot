@@ -740,12 +740,14 @@ async def ws_main():
     uri = f"{'wss' if SCHEME == 'https' else 'ws'}://{SERVER_IP}:{PORT}/ws/{SECRET}"
     ssl_ctx = None
     if SCHEME == 'https':
-        ssl_ctx = ssl.create_default_context()
-        if VERIFY_SSL is False:
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = ssl.CERT_NONE
-        elif isinstance(VERIFY_SSL, str):
+        # disable certificate validation unless explicitly forced
+        if isinstance(VERIFY_SSL, str):
+            ssl_ctx = ssl.create_default_context()
             ssl_ctx.load_verify_locations(VERIFY_SSL)
+        elif VERIFY_ENV == "force":
+            ssl_ctx = ssl.create_default_context()
+        else:
+            ssl_ctx = ssl._create_unverified_context()
     _ensure_fp(SERVER)
     async with websockets.connect(uri, ssl=ssl_ctx) as ws:
         log.info("Agent WS connected → %s", uri)
