@@ -7,6 +7,7 @@ from statistics import median
 from datetime import datetime, timedelta
 from typing import List
 import re
+from concurrent.futures import ProcessPoolExecutor, Future
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -16,7 +17,15 @@ import numpy as np
 from db import fetch_metrics, fetch_metrics_full
 
 # matplotlib без X-сервера
+
 matplotlib.use("Agg")
+
+# глобальный пул процессов для тяжёлых задач
+_executor = ProcessPoolExecutor()
+
+def submit(func, *args, **kwargs) -> Future:
+    """Отправить задачу в пул процессов."""
+    return _executor.submit(func, *args, **kwargs)
 
 
 def _find_gaps(ts, factor: float = 2.0):
