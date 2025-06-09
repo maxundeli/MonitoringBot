@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Mapping
 
 import matplotlib
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from telegram import (
     InlineKeyboardButton,
@@ -1068,6 +1068,44 @@ async def pull(secret: str):
     db["secrets"][secret]["pending"] = []
     save_db(db)
     return {"commands": cmds}
+
+@app.websocket("/api/ws/{secret}")
+async def ws_endpoint(websocket: WebSocket, secret: str):
+    db = load_db()
+    if secret not in db["secrets"]:
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_json()
+            payload = PushPayload(**data)
+
+            if payload.text:
+                LATEST_TEXT[secret] = payload.text
+
+            if payload.diag_ok is not None:
+                LATEST_DIAG[secret] = payload.diag if payload.diag_ok else None
+            elif payload.cpu is not None and payload.ram is not None:
+                if payload.oneshot:
+                    row = payload.model_dump()
+                    row.pop("oneshot", None)
+                    row["disks"] = json.dumps(row.get("disks") or [])
+                    row["top_procs"] = json.dumps(row.get("top_procs") or [])
+                    row["ts"] = int(time.time())
+                    LATEST_STATUS[secret] = row
+                    await maybe_send_alerts(secret, row)
+                else:
+                    record_metric(secret, payload.model_dump())
+                    await maybe_send_alerts(secret, payload.model_dump())
+
+            db = load_db()
+            cmds = db["secrets"][secret].get("pending", [])
+            db["secrets"][secret]["pending"] = []
+            save_db(db)
+            await websocket.send_json({"commands": cmds})
+    except WebSocketDisconnect:
+        pass
 
 # ────────────────────────── Bootstrap ──────────────────────────────────────
 def start_uvicorn():

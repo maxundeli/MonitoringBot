@@ -6,6 +6,9 @@ from __future__ import annotations
 import logging, threading
 import os
 import platform
+import asyncio
+import json
+import websockets
 import atexit
 try:
     import wmi
@@ -872,24 +875,15 @@ def do_shutdown():
     except Exception as e:
         log.error("shutdown failed: %s", e)
 
-# ────────────────────────── main loop ─────────────────────────────────────
+# ────────────────────────── WebSocket loop ───────────────────────────────
 
-log.info("Agent started → %s", SERVER)
-psutil.cpu_percent(interval=None)
-# инициализируем кэш процессов, чтобы первые /status не показывали 0%
-gather_top_processes()
-init_gpu_metrics()
-
-while True:
-    metrics = gather_metrics()
-    push_metrics(metrics)
-    for c in pull_cmds():
+def handle_cmds(cmds: List[str]):
+    for c in cmds:
         if c == "reboot":
             log.info("cmd reboot"); push_text("⚡️ Rebooting…"); do_reboot()
         elif c == "shutdown":
             log.info("cmd shutdown"); push_text("💤 Shutting down…"); do_shutdown()
         elif c == "speedtest":
-            # запускаем тест в отдельном потоке, чтобы не блокировать основной цикл
             if not speedtest_running:
                 log.info("cmd speedtest (async)")
                 speedtest_running = True
@@ -906,4 +900,40 @@ while True:
         elif c == "status":
             log.info("cmd status")
             push_metrics(gather_metrics(full=True), oneshot=True)
-    time.sleep(INTERVAL)
+
+
+async def ws_main():
+    url = f"wss://{SERVER_IP}:{PORT}/api/ws/{SECRET}"
+    pinned = _load_fp()
+    while True:
+        ctx = _ctx_with_pinning(pinned)
+        try:
+            async with websockets.connect(url, ssl=ctx) as ws:
+                sslobj = ws.transport.get_extra_info("ssl_object")
+                if sslobj:
+                    fp = _cert_fp(sslobj.getpeercert(binary_form=True))
+                    if pinned is None:
+                        _save_fp(fp)
+                        pinned = fp
+                        log.info("\ud83c\udf89  Cert saved, fp=%s...", fp[:16])
+                    elif pinned != fp:
+                        _mismatch_exit(pinned, fp)
+
+                log.info("WebSocket connected → %s", url)
+                psutil.cpu_percent(interval=None)
+                gather_top_processes()
+                init_gpu_metrics()
+                while True:
+                    metrics = gather_metrics()
+                    await ws.send(json.dumps(metrics))
+                    resp = await ws.recv()
+                    cmds = json.loads(resp).get("commands", [])
+                    handle_cmds(cmds)
+                    await asyncio.sleep(INTERVAL)
+        except Exception as e:
+            log.error("ws error: %s", e)
+            await asyncio.sleep(5)
+
+
+if __name__ == "__main__":
+    asyncio.run(ws_main())
