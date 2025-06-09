@@ -61,6 +61,9 @@ LATEST_DIAG: Dict[str, Optional[str]] = {}
 LATEST_STATUS: Dict[str, Dict[str, Any]] = {}
 _MISSING = object()
 
+# активные WebSocket-соединения с агентами
+ACTIVE_WS: Dict[str, WebSocket] = {}
+
 # ссылка на экземпляр Telegram-приложения для отправки уведомлений
 TG_APP = None
 
@@ -127,6 +130,20 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("remote-bot")
+
+async def send_or_queue(secret: str, cmd: str) -> None:
+    """Попытаться отправить команду агенту через WebSocket либо поставить в очередь."""
+    ws = ACTIVE_WS.get(secret)
+    if ws:
+        try:
+            await ws.send_json({"commands": [cmd]})
+            return
+        except Exception as exc:
+            log.warning("WS send failed: %s", exc)
+    db = load_db()
+    entry = db["secrets"].setdefault(secret, {})
+    entry.setdefault("pending", []).append(cmd)
+    save_db(db)
 
 UNIT_NAMES = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
 # Для сетевой скорости используем биты
@@ -619,8 +636,7 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         msg = await update.message.reply_text("Нет данных от агента.")
 
-    entry.setdefault("pending", []).append("status")
-    save_db(db)
+    await send_or_queue(secret, "status")
 
     ctx.job_queue.run_repeating(
         callback=check_status_done,
@@ -818,8 +834,7 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             else:
                 await q.edit_message_text("Нет данных от агента.")
 
-        entry.setdefault("pending", []).append("status")
-        save_db(db)
+        await send_or_queue(secret, "status")
 
         ctx.job_queue.run_repeating(
             callback=check_status_done,
@@ -836,8 +851,7 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         entry = db["secrets"].get(secret)
         if not entry or not is_owner(entry, q.from_user.id):
             return await q.edit_message_text("🚫 Нет доступа.")
-        entry.setdefault("pending", []).append(action)
-        save_db(db)
+        await send_or_queue(secret, action)
         return await q.edit_message_text(f"☑️ *{action}* поставлена в очередь.", parse_mode="Markdown")
     if action == "list":
         uid = q.from_user.id
@@ -911,8 +925,7 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not entry or not is_owner(entry, q.from_user.id):
             await q.answer("🚫 Нет доступа.", show_alert=True)
             return
-        entry.setdefault("pending", []).append("speedtest")
-        save_db(db)
+        await send_or_queue(secret, "speedtest")
 
         await q.answer()
         msg = await ctx.bot.send_message(
@@ -937,8 +950,7 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not entry or not is_owner(entry, q.from_user.id):
             await q.answer("🚫 Нет доступа.", show_alert=True)
             return
-        entry.setdefault("pending", []).append("diag")
-        save_db(db)
+        await send_or_queue(secret, "diag")
 
         await q.answer()
         msg = await ctx.bot.send_message(
@@ -1077,6 +1089,7 @@ async def ws_endpoint(ws: WebSocket, secret: str):
         await ws.close(code=1008)
         return
     await ws.accept()
+    ACTIVE_WS[secret] = ws
     try:
         while True:
             data = await ws.receive_json()
@@ -1087,7 +1100,9 @@ async def ws_endpoint(ws: WebSocket, secret: str):
             save_db(db)
             await ws.send_json({"commands": cmds})
     except WebSocketDisconnect:
-        return
+        pass
+    finally:
+        ACTIVE_WS.pop(secret, None)
 
 # ────────────────────────── Bootstrap ──────────────────────────────────────
 def start_uvicorn():

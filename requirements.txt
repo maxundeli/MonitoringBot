@@ -3,7 +3,6 @@ uvicorn[standard]>=0.27,<0.30
 python-telegram-bot[job-queue]>=20.0,<21.0
 matplotlib>=3.8
 psutil>=5.9
-requests>=2.31
 pydantic>=2.6
 GPUtil>=1.4.0
 speedtest-cli>=2.1
