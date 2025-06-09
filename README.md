@@ -87,6 +87,7 @@ python -m client
 | `AGENT_SERVER_IP` | client | prompt | Server IPv4 address |
 | `AGENT_PORT` | client | 8000 | Server port |
 | `AGENT_INTERVAL` | client | 5 | Seconds between metric pushes |
+| `AGENT_RECONNECT_DELAY` | client | 5 | Seconds before reconnecting |
 | `AGENT_VERIFY_SSL` | client | 1 | `0` = disable verification |
 
 Values are persisted to a local `.env` file after the first run.
