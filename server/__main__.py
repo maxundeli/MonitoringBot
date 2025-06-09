@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Mapping
 
 import matplotlib
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from telegram import (
     InlineKeyboardButton,
@@ -1036,8 +1036,9 @@ class PushPayload(BaseModel):
     diag: str | None = None
     diag_ok: bool | None = None
 
-@app.post("/api/push/{secret}")
-async def push(secret: str, payload: PushPayload):
+
+async def process_payload(secret: str, payload: PushPayload) -> None:
+    """Обработать данные от агента."""
     db = load_db()
     if secret not in db["secrets"]:
         raise HTTPException(404)
@@ -1047,10 +1048,10 @@ async def push(secret: str, payload: PushPayload):
 
     if payload.diag_ok is not None:
         LATEST_DIAG[secret] = payload.diag if payload.diag_ok else None
-        return {"ok": True}
+        return
 
     if payload.cpu is None or payload.ram is None:
-        return {"ok": True}
+        return
 
     if payload.oneshot:
         data = payload.model_dump()
@@ -1060,22 +1061,33 @@ async def push(secret: str, payload: PushPayload):
         data["ts"] = int(time.time())
         LATEST_STATUS[secret] = data
         await maybe_send_alerts(secret, data)
-        return {"ok": True}
+        return
 
     record_metric(secret, payload.model_dump())
     await maybe_send_alerts(secret, payload.model_dump())
 
-    return {"ok": True}
 
-@app.get("/api/pull/{secret}")
-async def pull(secret: str):
+
+
+
+@app.websocket("/ws/{secret}")
+async def ws_endpoint(ws: WebSocket, secret: str):
     db = load_db()
     if secret not in db["secrets"]:
-        raise HTTPException(404)
-    cmds = db["secrets"][secret].get("pending", [])
-    db["secrets"][secret]["pending"] = []
-    save_db(db)
-    return {"commands": cmds}
+        await ws.close(code=1008)
+        return
+    await ws.accept()
+    try:
+        while True:
+            data = await ws.receive_json()
+            await process_payload(secret, PushPayload(**data))
+            db = load_db()
+            cmds = db["secrets"][secret].get("pending", [])
+            db["secrets"][secret]["pending"] = []
+            save_db(db)
+            await ws.send_json({"commands": cmds})
+    except WebSocketDisconnect:
+        return
 
 # ────────────────────────── Bootstrap ──────────────────────────────────────
 def start_uvicorn():

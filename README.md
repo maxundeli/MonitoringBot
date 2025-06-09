@@ -18,7 +18,8 @@ The server stores incoming data in SQLite and can generate on‑demand plots del
 * **Secure communication** – HTTPS with automatically generated self‑signed certificates (fallback to HTTP for testing).
 * **Telegram integration** – Inline commands for status queries and remote actions (reboot / shutdown).
 * **Data persistence** – Lightweight storage using SQLite; suitable for single‑instance deployments.
-* **Visualisation** – Matplotlib charts returned directly in chat.
+* **WebSocket transport** – двусторонняя связь между агентом и сервером без HTTP polling.
+* **Visualisation** – Matplotlib charts returned напрямую в чате.
 
 ## Installation
 

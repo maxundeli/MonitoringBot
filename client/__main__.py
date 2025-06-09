@@ -4,6 +4,8 @@ from __future__ import annotations
 
 
 import logging, threading
+import asyncio
+import json
 import os
 import platform
 import atexit
@@ -29,9 +31,9 @@ GPU_METRIC_FUNCS: list = []
 NVML_INITED = False
 NVML_HANDLE = None
 CPU_CORES = psutil.cpu_count(logical=False) or psutil.cpu_count() or 1
-import requests
-from requests import Session
-from requests.exceptions import SSLError, ConnectionError
+import websockets
+WS_LOOP: asyncio.AbstractEventLoop | None = None
+WS_CONN: websockets.WebSocketClientProtocol | None = None
 try:
     import pynvml
 except Exception:
@@ -114,7 +116,7 @@ else:
 
 CA_FILE = os.getenv("AGENT_CA_FILE")
 if CA_FILE:
-    VERIFY_SSL = CA_FILE  # requests accepts str path
+    VERIFY_SSL = CA_FILE
 
 SCHEME = "https"
 SERVER = f"{SCHEME}://{SERVER_IP}:{PORT}"
@@ -614,17 +616,21 @@ def _speedtest_job():
         speedtest_running = False
 
 
+def ws_send(obj: dict) -> None:
+    if WS_CONN and WS_LOOP:
+        fut = asyncio.run_coroutine_threadsafe(
+            WS_CONN.send(json.dumps(obj)), WS_LOOP
+        )
+        try:
+            fut.result()
+        except Exception as e:
+            log.error("WS send error: %s", e)
+    else:
+        log.error("WS connection not ready")
+
 def push_diag(txt: str, ok: bool = True):
     """Send diagnostics result to the server."""
-    try:
-        r = _request(
-            "POST",
-            f"{SERVER}/api/push/{SECRET}",
-            json={"diag": txt, "diag_ok": ok},
-        )
-        r.raise_for_status()
-    except Exception as e:
-        log.error("diag push error: %s", e)
+    ws_send({"diag": txt, "diag_ok": ok})
 
 def _diag_job():
     global diag_running
@@ -640,13 +646,11 @@ def _diag_job():
     finally:
         diag_running = False
 # ────── network layer: TLS TOFU + fingerprint pinning ────────────
-import ssl, socket, json, hashlib, pathlib, logging, requests
+import ssl, socket, json, hashlib, pathlib, logging
 from urllib.parse import urlparse
-from requests.exceptions import SSLError
 import sys
 
 log      = logging.getLogger(__name__)
-session  = requests.Session()
 FP_FILE  = pathlib.Path.home() / ".bot_fingerprint.json"
 
 def _fingerprint(der: bytes) -> str:
@@ -695,55 +699,18 @@ def _ensure_fp(url: str) -> str:
         _mismatch_exit(pinned, current_fp)
     return current_fp
 
-def _request(method: str, url: str, **kwargs):
-    # проверяем отпечаток перед отправкой данных
-    pinned_before = _ensure_fp(url)
-    try:
-        resp = session.request(method, url, verify=False,
-                               timeout=10, stream=True, **kwargs)
-    except SSLError as exc:
-        log.error("TLS-ошибка: %s", exc)
-        raise
-
-    cert_der = None
-    try:
-        cert_der = resp.raw.connection.sock.getpeercert(binary_form=True)
-    except AttributeError:
-        cert_der = _fetch_cert_der(urlparse(url))
-
-    current_fp = _fingerprint(cert_der)
-
-    pinned = _load_fp()
-    if pinned != current_fp:
-        _mismatch_exit(pinned or pinned_before, current_fp)
-
-    return resp
 
 def push_text(txt: str):
-    try:
-        r = _request("POST", f"{SERVER}/api/push/{SECRET}", json={"text": txt})
-        r.raise_for_status()
-    except Exception as e:
-        log.error("push error: %s", e)
+    ws_send({"text": txt})
 
 
 def push_metrics(data: dict, oneshot: bool = False):
     payload = dict(data)
     if oneshot:
         payload["oneshot"] = True
-    try:
-        r = _request("POST", f"{SERVER}/api/push/{SECRET}", json=payload)
-        r.raise_for_status()
-    except Exception as e:
-        log.error("push error: %s", e)
+    ws_send(payload)
 
 
-def pull_cmds() -> List[str]:
-    try:
-        r = _request("GET", f"{SERVER}/api/pull/{SECRET}")
-        r.raise_for_status(); return r.json().get("commands", [])
-    except Exception as e:
-        log.error("pull error: %s", e); return []
 
 # ────────────────────────── actions ───────────────────────────────────────
 
@@ -766,38 +733,52 @@ def do_shutdown():
     except Exception as e:
         log.error("shutdown failed: %s", e)
 
+
+async def ws_main():
+    """Main loop using WebSockets."""
+    global WS_LOOP, WS_CONN
+    uri = f"{'wss' if SCHEME == 'https' else 'ws'}://{SERVER_IP}:{PORT}/ws/{SECRET}"
+    ssl_ctx = None
+    if SCHEME == 'https':
+        ssl_ctx = ssl.create_default_context()
+        if VERIFY_SSL is False:
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+        elif isinstance(VERIFY_SSL, str):
+            ssl_ctx.load_verify_locations(VERIFY_SSL)
+    _ensure_fp(SERVER)
+    async with websockets.connect(uri, ssl=ssl_ctx) as ws:
+        log.info("Agent WS connected → %s", uri)
+        WS_LOOP = asyncio.get_running_loop()
+        WS_CONN = ws
+        psutil.cpu_percent(interval=None)
+        gather_top_processes()
+        init_gpu_metrics()
+        while True:
+            metrics = gather_metrics()
+            await ws.send(json.dumps(metrics))
+            resp = json.loads(await ws.recv())
+            for c in resp.get('commands', []):
+                if c == 'reboot':
+                    log.info('cmd reboot'); push_text('⚡️ Rebooting…'); do_reboot()
+                elif c == 'shutdown':
+                    log.info('cmd shutdown'); push_text('💤 Shutting down…'); do_shutdown()
+                elif c == 'speedtest':
+                    if not speedtest_running:
+                        log.info('cmd speedtest (async)');
+                        threading.Thread(target=_speedtest_job, daemon=True).start()
+                    else:
+                        push_text('🚧 Speedtest уже выполняется, дождитесь окончания.')
+                elif c == 'diag':
+                    if not diag_running:
+                        log.info('cmd diagnostics (async)');
+                        threading.Thread(target=_diag_job, daemon=True).start()
+                    else:
+                        push_text('🚧 Диагностика уже выполняется, дождитесь окончания.')
+                elif c == 'status':
+                    await ws.send(json.dumps({**gather_metrics(full=True), 'oneshot': True}))
+            await asyncio.sleep(INTERVAL)
+
 # ────────────────────────── main loop ─────────────────────────────────────
 
-log.info("Agent started → %s", SERVER)
-psutil.cpu_percent(interval=None)
-# инициализируем кэш процессов, чтобы первые /status не показывали 0%
-gather_top_processes()
-init_gpu_metrics()
-
-while True:
-    metrics = gather_metrics()
-    push_metrics(metrics)
-    for c in pull_cmds():
-        if c == "reboot":
-            log.info("cmd reboot"); push_text("⚡️ Rebooting…"); do_reboot()
-        elif c == "shutdown":
-            log.info("cmd shutdown"); push_text("💤 Shutting down…"); do_shutdown()
-        elif c == "speedtest":
-            # запускаем тест в отдельном потоке, чтобы не блокировать основной цикл
-            if not speedtest_running:
-                log.info("cmd speedtest (async)")
-                speedtest_running = True
-                threading.Thread(target=_speedtest_job, daemon=True).start()
-            else:
-                push_text("🚧 Speedtest уже выполняется, дождитесь окончания.")
-        elif c == "diag":
-            if not diag_running:
-                log.info("cmd diagnostics (async)")
-                diag_running = True
-                threading.Thread(target=_diag_job, daemon=True).start()
-            else:
-                push_text("🚧 Диагностика уже выполняется, дождитесь окончания.")
-        elif c == "status":
-            log.info("cmd status")
-            push_metrics(gather_metrics(full=True), oneshot=True)
-    time.sleep(INTERVAL)
+asyncio.run(ws_main())
