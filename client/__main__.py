@@ -21,7 +21,7 @@ import shutil
 import subprocess
 
 import psutil
-from .worker import run_speedtest, run_diagnostics, submit
+from client.worker import run_speedtest, run_diagnostics, submit
 # Кэш для вычисления CPU без задержки
 PROC_CACHE: dict[int, tuple[float, float]] = {}
 GPU_VENDOR: str | None = None
