@@ -12,6 +12,7 @@ import locale
 
 __all__ = [
     "submit",
+    "shutdown_executor",
     "run_speedtest",
     "run_diagnostics",
 ]
@@ -21,6 +22,11 @@ _executor = ProcessPoolExecutor()
 def submit(func, *args, **kwargs) -> Future:
     """Отправить функцию в пул процессов."""
     return _executor.submit(func, *args, **kwargs)
+
+
+def shutdown_executor() -> None:
+    """Корректно завершить пул процессов."""
+    _executor.shutdown(wait=False)
 
 
 def _subprocess_flags() -> int:
