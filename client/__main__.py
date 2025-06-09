@@ -734,7 +734,51 @@ def do_shutdown():
         log.error("shutdown failed: %s", e)
 
 
-async def ws_main():
+async def _send_metrics_loop(ws: websockets.WebSocketClientProtocol) -> None:
+    """Периодическая отправка метрик."""
+    psutil.cpu_percent(interval=None)
+    gather_top_processes()
+    init_gpu_metrics()
+    while True:
+        try:
+            metrics = gather_metrics()
+            await ws.send(json.dumps(metrics))
+        except Exception as exc:
+            log.error("WS send error: %s", exc)
+            break
+        await asyncio.sleep(INTERVAL)
+
+
+async def _recv_loop(ws: websockets.WebSocketClientProtocol) -> None:
+    """Получение команд от сервера."""
+    while True:
+        try:
+            resp = json.loads(await ws.recv())
+        except Exception as exc:
+            log.error("WS recv error: %s", exc)
+            break
+        for c in resp.get("commands", []):
+            if c == "reboot":
+                log.info("cmd reboot"); push_text("⚡️ Rebooting…"); do_reboot()
+            elif c == "shutdown":
+                log.info("cmd shutdown"); push_text("💤 Shutting down…"); do_shutdown()
+            elif c == "speedtest":
+                if not speedtest_running:
+                    log.info("cmd speedtest (async)")
+                    threading.Thread(target=_speedtest_job, daemon=True).start()
+                else:
+                    push_text("🚧 Speedtest уже выполняется, дождитесь окончания.")
+            elif c == "diag":
+                if not diag_running:
+                    log.info("cmd diagnostics (async)")
+                    threading.Thread(target=_diag_job, daemon=True).start()
+                else:
+                    push_text("🚧 Диагностика уже выполняется, дождитесь окончания.")
+            elif c == "status":
+                await ws.send(json.dumps({**gather_metrics(full=True), "oneshot": True}))
+
+
+async def ws_main() -> None:
     """Main loop using WebSockets."""
     global WS_LOOP, WS_CONN
     uri = f"{'wss' if SCHEME == 'https' else 'ws'}://{SERVER_IP}:{PORT}/ws/{SECRET}"
@@ -753,33 +797,12 @@ async def ws_main():
         log.info("Agent WS connected → %s", uri)
         WS_LOOP = asyncio.get_running_loop()
         WS_CONN = ws
-        psutil.cpu_percent(interval=None)
-        gather_top_processes()
-        init_gpu_metrics()
-        while True:
-            metrics = gather_metrics()
-            await ws.send(json.dumps(metrics))
-            resp = json.loads(await ws.recv())
-            for c in resp.get('commands', []):
-                if c == 'reboot':
-                    log.info('cmd reboot'); push_text('⚡️ Rebooting…'); do_reboot()
-                elif c == 'shutdown':
-                    log.info('cmd shutdown'); push_text('💤 Shutting down…'); do_shutdown()
-                elif c == 'speedtest':
-                    if not speedtest_running:
-                        log.info('cmd speedtest (async)');
-                        threading.Thread(target=_speedtest_job, daemon=True).start()
-                    else:
-                        push_text('🚧 Speedtest уже выполняется, дождитесь окончания.')
-                elif c == 'diag':
-                    if not diag_running:
-                        log.info('cmd diagnostics (async)');
-                        threading.Thread(target=_diag_job, daemon=True).start()
-                    else:
-                        push_text('🚧 Диагностика уже выполняется, дождитесь окончания.')
-                elif c == 'status':
-                    await ws.send(json.dumps({**gather_metrics(full=True), 'oneshot': True}))
-            await asyncio.sleep(INTERVAL)
+        sender = asyncio.create_task(_send_metrics_loop(ws))
+        receiver = asyncio.create_task(_recv_loop(ws))
+        done, pending = await asyncio.wait([sender, receiver], return_when=asyncio.FIRST_EXCEPTION)
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
 # ────────────────────────── main loop ─────────────────────────────────────
 

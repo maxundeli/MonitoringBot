@@ -18,7 +18,7 @@ The server stores incoming data in SQLite and can generate on‑demand plots del
 * **Secure communication** – WebSocket over TLS with automatically generated self‑signed certificates (fallback to WS for testing).
 * **Telegram integration** – Inline commands for status queries and remote actions (reboot / shutdown).
 * **Data persistence** – Lightweight storage using SQLite; suitable for single‑instance deployments.
-* **WebSocket transport** – full duplex communication allowing the server to trigger tasks like speed tests instantly.
+* **WebSocket transport** – persistent bidirectional connection lets the server trigger tasks like speed tests instantly and receive full status without delay.
 * **Visualization** – Matplotlib charts returned directly in chat.
 
 ## Installation
