@@ -806,4 +806,11 @@ async def ws_main() -> None:
 
 # ────────────────────────── main loop ─────────────────────────────────────
 
-asyncio.run(ws_main())
+def main() -> None:
+    asyncio.run(ws_main())
+
+
+if __name__ == "__main__":
+    import multiprocessing as _mp
+    _mp.freeze_support()
+    main()
