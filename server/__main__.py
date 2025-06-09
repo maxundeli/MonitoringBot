@@ -54,12 +54,18 @@ ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 API_PORT = int(os.getenv("PORT", "8000"))
 
 # последний текстовый статус от клиентов (speedtest и пр.)
-LATEST_TEXT: Dict[str, str] = {}
+# ключ – секрет, значение – (timestamp, text)
+LATEST_TEXT: Dict[str, tuple[float, str]] = {}
 # диагностические отчёты, отправляемые агентом
-LATEST_DIAG: Dict[str, Optional[str]] = {}
+# значение – (timestamp, текст или None)
+LATEST_DIAG: Dict[str, tuple[float, Optional[str]]] = {}
 # временные метрики, отправляемые командой /status
-LATEST_STATUS: Dict[str, Dict[str, Any]] = {}
+# значение – (timestamp, данные)
+LATEST_STATUS: Dict[str, tuple[float, Dict[str, Any]]] = {}
 _MISSING = object()
+
+# сколько секунд храним временные записи (текст, диагностика и статус)
+CACHE_TTL = 3600  # 1 час
 
 # активные WebSocket-соединения с агентами
 ACTIVE_WS: Dict[str, WebSocket] = {}
@@ -198,7 +204,8 @@ async def check_speedtest_done(ctx: ContextTypes.DEFAULT_TYPE):
     if "speedtest" in entry.get("pending", []):
         return
 
-    status: str = LATEST_TEXT.get(secret, "")
+    entry = LATEST_TEXT.get(secret)
+    status = entry[1] if entry else ""
     if "Speedtest" not in status:
 
         start_ts = data.setdefault("start_ts", time.time())
@@ -234,7 +241,8 @@ async def check_diag_done(ctx: ContextTypes.DEFAULT_TYPE):
     if "diag" in entry.get("pending", []):
         return
 
-    result = LATEST_DIAG.get(secret, _MISSING)
+    entry = LATEST_DIAG.get(secret)
+    result = entry[1] if entry else _MISSING
     if result is _MISSING:
         start_ts = data.setdefault("start_ts", time.time())
         TIMEOUT = 3 * 60
@@ -278,7 +286,8 @@ async def check_status_done(ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = data["chat_id"]
     msg_id = data["msg_id"]
 
-    row = LATEST_STATUS.pop(secret, None)
+    entry = LATEST_STATUS.pop(secret, None)
+    row = entry[1] if entry else None
     if not row:
         start_ts = data.setdefault("start_ts", time.time())
         if time.time() - start_ts > 15:
@@ -302,9 +311,19 @@ async def check_status_done(ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def _purge_loop():
+    last_sql_purge = 0.0
     while True:
-        purge_old_metrics()
-        await asyncio.sleep(86400)
+        now = time.time()
+        if now - last_sql_purge > 86400:
+            purge_old_metrics()
+            last_sql_purge = now
+
+        for store in (LATEST_TEXT, LATEST_DIAG, LATEST_STATUS):
+            for key, (ts, _) in list(store.items()):
+                if now - ts > CACHE_TTL:
+                    store.pop(key, None)
+
+        await asyncio.sleep(600)
 
 
 async def maybe_send_alerts(secret: str, data: Dict[str, Any]):
@@ -612,6 +631,8 @@ async def cmd_delkey(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     save_db(db)
     sql.execute("DELETE FROM metrics WHERE secret=?", (secret,))
     LATEST_TEXT.pop(secret, None)
+    LATEST_DIAG.pop(secret, None)
+    LATEST_STATUS.pop(secret, None)
     await update.message.reply_text(f"🗑️ Удалён ключ {secret}")
 
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1056,10 +1077,10 @@ async def process_payload(secret: str, payload: PushPayload) -> None:
         raise HTTPException(404)
 
     if payload.text:
-        LATEST_TEXT[secret] = payload.text
+        LATEST_TEXT[secret] = (time.time(), payload.text)
 
     if payload.diag_ok is not None:
-        LATEST_DIAG[secret] = payload.diag if payload.diag_ok else None
+        LATEST_DIAG[secret] = (time.time(), payload.diag if payload.diag_ok else None)
         return
 
     if payload.cpu is None or payload.ram is None:
@@ -1071,7 +1092,7 @@ async def process_payload(secret: str, payload: PushPayload) -> None:
         data["disks"] = json.dumps(data.get("disks") or [])
         data["top_procs"] = json.dumps(data.get("top_procs") or [])
         data["ts"] = int(time.time())
-        LATEST_STATUS[secret] = data
+        LATEST_STATUS[secret] = (time.time(), data)
         await maybe_send_alerts(secret, data)
         return
 
