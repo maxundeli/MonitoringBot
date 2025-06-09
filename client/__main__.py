@@ -793,16 +793,23 @@ async def ws_main() -> None:
         else:
             ssl_ctx = ssl._create_unverified_context()
     _ensure_fp(SERVER)
-    async with websockets.connect(uri, ssl=ssl_ctx) as ws:
-        log.info("Agent WS connected → %s", uri)
-        WS_LOOP = asyncio.get_running_loop()
-        WS_CONN = ws
-        sender = asyncio.create_task(_send_metrics_loop(ws))
-        receiver = asyncio.create_task(_recv_loop(ws))
-        done, pending = await asyncio.wait([sender, receiver], return_when=asyncio.FIRST_EXCEPTION)
-        for t in pending:
-            t.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+    while True:
+        try:
+            async with websockets.connect(uri, ssl=ssl_ctx) as ws:
+                log.info("Agent WS connected → %s", uri)
+                WS_LOOP = asyncio.get_running_loop()
+                WS_CONN = ws
+                sender = asyncio.create_task(_send_metrics_loop(ws))
+                receiver = asyncio.create_task(_recv_loop(ws))
+                done, pending = await asyncio.wait(
+                    [sender, receiver], return_when=asyncio.FIRST_EXCEPTION
+                )
+                for t in pending:
+                    t.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+        except Exception as exc:
+            log.error("WS connection error: %s", exc)
+            await asyncio.sleep(5)
 
 # ────────────────────────── main loop ─────────────────────────────────────
 
