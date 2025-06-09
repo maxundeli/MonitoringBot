@@ -39,11 +39,18 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from db import sql, load_db, save_db, record_metric, purge_old_metrics
-from graphs import parse_timespan, plot_custom, plot_metric, plot_net, plot_all_metrics
+from .db import sql, load_db, save_db, record_metric, purge_old_metrics
+from .graphs import (
+    parse_timespan,
+    plot_custom,
+    plot_metric,
+    plot_net,
+    plot_all_metrics,
+    submit,
+)
 
 # ────────────────────────── CONFIG ─────────────────────────────────────────
-ENV_FILE = Path(".env")
+ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 API_PORT = int(os.getenv("PORT", "8000"))
 
 # последний текстовый статус от клиентов (speedtest и пр.)
@@ -158,8 +165,9 @@ def disk_bar(p: float, length: int = 10) -> str:
     return "█" * filled + "░" * (length - filled)
 
 async def run_plot(func, *args):
-    """Run plotting function in a thread."""
-    return await asyncio.to_thread(func, *args)
+    """Run plotting function in a worker process."""
+    fut = submit(func, *args)
+    return await asyncio.wrap_future(fut)
 async def check_speedtest_done(ctx: ContextTypes.DEFAULT_TYPE):
     job  = ctx.job
     data = job.data
