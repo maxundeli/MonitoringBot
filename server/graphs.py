@@ -15,6 +15,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import numpy as np
+import gc
 
 from .db import fetch_metrics, fetch_metrics_full
 
@@ -205,6 +206,7 @@ def plot_metric(secret: str, metric: str, seconds: int):
     plt.tight_layout()
     fig.savefig(buf, dpi=fig.dpi, format="png")
     plt.close(fig)
+    gc.collect()
     buf.seek(0)
     return buf
 
@@ -250,6 +252,7 @@ def plot_net(secret: str, seconds: int):
     plt.tight_layout()
     fig.savefig(buf, dpi=fig.dpi, format="png")
     plt.close(fig)
+    gc.collect()
     buf.seek(0)
     return buf
 
@@ -294,6 +297,7 @@ def plot_all_metrics(secret: str, seconds: int):
     plt.tight_layout()
     fig.savefig(buf, dpi=fig.dpi, format="png")
     plt.close(fig)
+    gc.collect()
     buf.seek(0)
     return buf
 
@@ -428,5 +432,6 @@ def plot_custom(secret: str, metrics: list[str], seconds: int, ylim_top: float |
     plt.tight_layout()
     fig.savefig(buf, dpi=fig.dpi, format="png")
     plt.close(fig)
+    gc.collect()
     buf.seek(0)
     return buf
