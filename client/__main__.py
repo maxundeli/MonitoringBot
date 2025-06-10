@@ -24,7 +24,11 @@ import subprocess
 
 import psutil
 from PIL import Image
-import pystray
+
+if os.name == "nt":
+    import pystray
+else:
+    pystray = None  # type: ignore
 from client.worker import run_speedtest, run_diagnostics, submit, shutdown_executor
 
 atexit.register(shutdown_executor)
@@ -39,7 +43,7 @@ CPU_CORES = psutil.cpu_count(logical=False) or psutil.cpu_count() or 1
 import websockets
 WS_LOOP: asyncio.AbstractEventLoop | None = None
 WS_CONN: websockets.WebSocketClientProtocol | None = None
-TRAY_ICON: pystray.Icon | None = None
+TRAY_ICON: object | None = None
 try:
     import pynvml
 except Exception:
@@ -194,8 +198,10 @@ def _tray_exit(icon, item) -> None:
         os._exit(0)
 
 
-def start_tray_icon() -> pystray.Icon:
+def start_tray_icon() -> object | None:
     """Запустить иконку в системном трее."""
+    if os.name != "nt" or pystray is None:
+        return None
     image = None
     try:
         if ICON_FILE:
