@@ -284,11 +284,11 @@ def plot_all_metrics(secret: str, seconds: int):
 
 MEM_UNITS = {
     "b": 1,
-    "kb": 1024,
+    "kb": 1000,
     "kib": 1024,
-    "mb": 1024 ** 2,
+    "mb": 1000 ** 2,
     "mib": 1024 ** 2,
-    "gb": 1024 ** 3,
+    "gb": 1000 ** 3,
     "gib": 1024 ** 3,
 }
 
@@ -337,7 +337,7 @@ def plot_custom(secret: str, metrics: list[str], seconds: int, ylim_top: float |
             cat = "percent"
         elif m == "ram":
             if unit and unit.lower() not in {"%", "percent"}:
-                factor = MEM_UNITS.get(unit.lower(), 1024 ** 2)
+                factor = MEM_UNITS.get(unit.lower(), 1000 ** 2)
                 ys = [r["ram_used"] / factor if r["ram_used"] is not None else np.nan for r in rows]
                 cat = "bytes"
                 default_unit = unit
@@ -346,7 +346,7 @@ def plot_custom(secret: str, metrics: list[str], seconds: int, ylim_top: float |
                 cat = "percent"
         elif m == "vram":
             if unit and unit.lower() not in {"%", "percent"}:
-                factor = MEM_UNITS.get(unit.lower(), 1024 ** 2)
+                factor = MEM_UNITS.get(unit.lower(), 1000 ** 2)
                 ys = [r["vram_used"] / factor if r["vram_used"] is not None else np.nan for r in rows]
                 cat = "bytes"
                 default_unit = unit
