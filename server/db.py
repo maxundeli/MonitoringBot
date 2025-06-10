@@ -3,6 +3,7 @@ import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+import sys
 
 import pymysql
 
@@ -99,7 +100,14 @@ def _maybe_migrate_json(mysql_con: pymysql.connections.Connection) -> None:
 
 
 def _init_mysql() -> pymysql.connections.Connection:
-    con = _get_conn()
+    try:
+        con = _get_conn()
+    except pymysql.err.OperationalError as exc:
+        print(
+            f"\u274c \u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0438\u0442\u044c\u0441\u044f \u043a MySQL ({MYSQL_HOST}:{MYSQL_PORT}): {exc}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     with con.cursor() as cur:
         cur.execute(
             """

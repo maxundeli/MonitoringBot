@@ -45,6 +45,16 @@ source .venv/bin/activate      # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### Prepare the MySQL database
+Make sure a MySQL server is running and an empty database exists. Configure connection parameters using environment variables:
+```bash
+export MYSQL_HOST=localhost
+export MYSQL_PORT=3306
+export MYSQL_USER=root
+export MYSQL_PASS=<password>
+export MYSQL_DB=monitoring
+```
+On first launch the server will create tables and migrate existing `metrics.sqlite` and `db.json` files if found.
 ## Quick Start
 
 ### 1. Launch the server
