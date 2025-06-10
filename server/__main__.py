@@ -149,23 +149,12 @@ UNIT_NAMES = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
 # Для сетевой скорости используем биты
 UNIT_NAMES_BITS = ["bit", "Kbit", "Mbit", "Gbit", "Tbit", "Pbit"]
 
-# Десятичные единицы для отображения RAM/VRAM/процессов
-UNIT_NAMES_SI = ["B", "KB", "MB", "GB", "TB", "PB"]
-
 def human_bytes(num: float) -> str:
     for unit in UNIT_NAMES:
         if num < 1024:
             return f"{num:.1f} {unit}"
         num /= 1024
     return f"{num:.1f} EiB"
-
-def human_bytes_si(num: float) -> str:
-    """Форматировать число байт в десятичные единицы (KB, MB...)."""
-    for unit in UNIT_NAMES_SI:
-        if num < 1000:
-            return f"{num:.1f} {unit}"
-        num /= 1000
-    return f"{num:.1f} EB"
 
 def human_net_speed(num_bytes_per_sec: float) -> str:
     """Показать скорость в битах в секунду."""
@@ -375,8 +364,8 @@ def format_status(row: Mapping[str, Any]) -> str:
         f"🖥️ CPU: {row['cpu']:.1f}%",
         f"🌡️ CPU Temp: {row['cpu_temp']:.1f} °C" if row['cpu_temp'] is not None else "🌡️ CPU Temp: N/A",
         "*━━━━━━━━━━━RAM━━━━━━━━━━━*",
-        f"🧠 RAM: {human_bytes_si(row['ram_used'])} / {human_bytes_si(row['ram_total'])} ({row['ram']:.1f}%)",
-        f"🧠 SWAP: {human_bytes_si(row['swap_used'])} / {human_bytes_si(row['swap_total'])} ({row['swap']:.1f}%)",
+        f"🧠 RAM: {human_bytes(row['ram_used'])} / {human_bytes(row['ram_total'])} ({row['ram']:.1f}%)",
+        f"🧠 SWAP: {human_bytes(row['swap_used'])} / {human_bytes(row['swap_total'])} ({row['swap']:.1f}%)",
     ]
     procs = json.loads(row['top_procs']) if row['top_procs'] else []
     if procs:
@@ -387,7 +376,7 @@ def format_status(row: Mapping[str, Any]) -> str:
                 continue
             name = escape_markdown(name_raw[:20], version=1)
             lines.append(
-                f"⚙️ {name}: 🖥️ {p['cpu']:.1f}% 🧠 {human_bytes_si(p['ram'])}"
+                f"⚙️ {name}: 🖥️ {p['cpu']:.1f}% 🧠 {human_bytes(p['ram'])}"
             )
     if row['net_up'] is not None and row['net_down'] is not None:
         lines.extend([
@@ -401,7 +390,7 @@ def format_status(row: Mapping[str, Any]) -> str:
         ])
         if row['vram_used'] is not None:
             lines.append(
-                f"🗄️ VRAM: {human_bytes_si(row['vram_used'] * 2**20)} / {human_bytes_si(row['vram_total'] * 2**20)} ({row['vram']:.1f}%)"
+                f"🗄️ VRAM: {row['vram_used']:.0f} / {row['vram_total']:.0f} MiB ({row['vram']:.1f}%)"
             )
         if row['gpu_temp'] is not None:
             lines.append(f"🌡️ GPU Temp: {row['gpu_temp']:.0f} °C")
