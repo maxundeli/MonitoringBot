@@ -13,3 +13,4 @@ pywin32>=306; platform_system=="Windows"
 websockets>=11.0
 pystray>=0.19; platform_system=="Windows"
 pillow>=11.0
+pymysql>=1.1
