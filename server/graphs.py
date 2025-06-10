@@ -6,6 +6,7 @@ import time
 from statistics import median
 from datetime import datetime, timedelta
 from typing import List
+import os
 import re
 from concurrent.futures import ProcessPoolExecutor, Future
 
@@ -20,12 +21,25 @@ from .db import fetch_metrics, fetch_metrics_full
 
 matplotlib.use("Agg")
 
-# глобальный пул процессов для тяжёлых задач
-_executor = ProcessPoolExecutor()
+# количество процессов берётся из переменной окружения
+# после завершения задачи исполнитель завершается, чтобы освободить память
+
+def _new_executor() -> ProcessPoolExecutor:
+    workers = os.getenv("GRAPH_WORKERS", "1")
+    try:
+        workers_num = int(workers)
+    except ValueError:
+        workers_num = 1
+    workers_num = max(workers_num, 1)
+    return ProcessPoolExecutor(max_workers=workers_num)
+
 
 def submit(func, *args, **kwargs) -> Future:
-    """Отправить задачу в пул процессов."""
-    return _executor.submit(func, *args, **kwargs)
+    """Запустить функцию в отдельном процессе и закрыть его после выполнения."""
+    executor = _new_executor()
+    future = executor.submit(func, *args, **kwargs)
+    future.add_done_callback(lambda _: executor.shutdown(wait=False))
+    return future
 
 
 def _find_gaps(ts, factor: float = 2.0):
