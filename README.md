@@ -11,13 +11,13 @@ MonitoringBot consists of:
 | **server/** | FastAPI application that receives, stores and visualises metrics. Integrates with a Telegram bot for user interaction. Run with `python -m server`. |
 | **client/** | Cross‑platform agent that collects host metrics (CPU, RAM, GPU, VRAM, disk, uptime) and periodically pushes them to the server. Run with `python -m client`. |
 
-The server stores incoming data in a MySQL database (started automatically) and can generate on‑demand plots delivered via Telegram.
+The server stores incoming data in SQLite and can generate on‑demand plots delivered via Telegram.
 
 ## Key Features
 * **Metric collection** – CPU and GPU load, memory usage, per‑disk utilisation and system uptime.
 * **Secure communication** – WebSocket over TLS with automatically generated self‑signed certificates (fallback to WS for testing).
 * **Telegram integration** – Inline commands for status queries and remote actions (reboot / shutdown).
-* **Data persistence** – Uses MySQL for reliable storage and multi‑instance deployments.
+* **Data persistence** – Lightweight storage using SQLite; suitable for single‑instance deployments.
 * **WebSocket transport** – persistent bidirectional connection lets the server trigger tasks like speed tests instantly and receive full status without delay.
 * **Visualization** – Matplotlib charts returned directly in chat.
 
@@ -48,14 +48,12 @@ pip install -r requirements.txt
 ## Quick Start
 
 ### 1. Launch the server
-Set the bot token and run the FastAPI application:
+Set the required environment variables and start the FastAPI application:
 ```bash
 export BOT_TOKEN="<telegram‑bot‑token>"
 python -m server
 ```
 The first launch generates `cert.pem` and `key.pem` for TLS.
-The MySQL server will also be started automatically and store its data in the
-`mysql_data` directory.
 
 ### 2. Register an agent
 In the Telegram chat, obtain an agent secret:
@@ -113,7 +111,6 @@ If this variable is not set, the client will try to load `client/icon.png` from 
 On Windows double clicking the icon toggles the console window. If the program
 was built using `--noconsole`, the console will be allocated when you double
 click.
-
 
 ## Project Structure
 ```
