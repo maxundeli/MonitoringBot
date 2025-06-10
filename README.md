@@ -46,11 +46,14 @@ pip install -r requirements.txt
 ```
 
 ### Prepare the MySQL database
-Запустите локальный сервер MySQL. Приложение использует базу `monitoring` c учётными данными `root`/`""` и создаёт её автоматически при первом запуске. Также будут перенесены данные из `metrics.sqlite` и `db.json`, если такие файлы существуют.
+Start a local MySQL server. The application uses a database named `monitoring`
+with the credentials `root`/`` (empty password) and creates it automatically on
+first launch. Existing data from `metrics.sqlite` and `db.json` will be imported
+if those files are present.
 ## Quick Start
 
 ### 1. Launch the server
-Укажите токен бота и запустите FastAPI приложение:
+Set the bot token and run the FastAPI application:
 ```bash
 export BOT_TOKEN="<telegram‑bot‑token>"
 python -m server
@@ -113,6 +116,28 @@ If this variable is not set, the client will try to load `client/icon.png` from 
 On Windows double clicking the icon toggles the console window. If the program
 was built using `--noconsole`, the console will be allocated when you double
 click.
+
+### Running the server as a service
+To start the server automatically on boot you can create a systemd service
+on Linux. Example unit file:
+
+```ini
+[Unit]
+Description=MonitoringBot server
+After=network.target
+
+[Service]
+WorkingDirectory=/path/to/MonitoringBot
+ExecStart=/usr/bin/python -m server
+Environment=BOT_TOKEN=YOUR_TELEGRAM_TOKEN
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Copy this to `/etc/systemd/system/monitoringbot.service`, update the path and
+token, then run `systemctl enable --now monitoringbot`.
 
 ## Project Structure
 ```
