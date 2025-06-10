@@ -11,3 +11,5 @@ numpy~=2.2.6
 wmi; platform_system=="Windows"
 pywin32>=306; platform_system=="Windows"
 websockets>=11.0
+pystray>=0.19
+pillow>=11.0
