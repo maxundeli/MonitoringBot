@@ -176,6 +176,10 @@ INTERVAL = int(os.getenv("AGENT_INTERVAL", "5"))
 RECONNECT_DELAY = int(os.getenv("AGENT_RECONNECT_DELAY", "5"))
 
 ICON_FILE = os.getenv("AGENT_ICON_FILE")
+if not ICON_FILE:
+    candidate = Path(__file__).with_name("icon.png")
+    if candidate.exists():
+        ICON_FILE = str(candidate)
 if ICON_FILE and not Path(ICON_FILE).exists():
     log.warning("Tray icon not found: %s", ICON_FILE)
     ICON_FILE = None
