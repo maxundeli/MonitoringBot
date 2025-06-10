@@ -1,97 +1,219 @@
-"""Функции работы с БД."""
-from __future__ import annotations
-
 import json
-import sqlite3
+import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
+
+import pymysql
 
 DB_FILE = Path("db.json")
 METRIC_DB = Path("metrics.sqlite")
 
+MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
+MYSQL_USER = os.getenv("MYSQL_USER", "root")
+MYSQL_PASS = os.getenv("MYSQL_PASS", "")
+MYSQL_DB = os.getenv("MYSQL_DB", "monitoring")
 
-def _init_metric_db() -> sqlite3.Connection:
-    """Return connection to metrics DB, upgrading schema if needed."""
-    con = sqlite3.connect(METRIC_DB, check_same_thread=False, isolation_level=None)
-    con.row_factory = sqlite3.Row
-    con.execute(
-        """CREATE TABLE IF NOT EXISTS metrics(
-               secret TEXT,
-               ts     INTEGER,
-               cpu    REAL,
-               ram    REAL,
-               gpu    REAL,
-               vram   REAL,
-               ram_used   REAL,
-               ram_total  REAL,
-               swap       REAL,
-               swap_used  REAL,
-               swap_total REAL,
-               vram_used  REAL,
-               vram_total REAL,
-               cpu_temp   REAL,
-               gpu_temp   REAL,
-               net_up     REAL,
-               net_down   REAL,
-               uptime     INTEGER,
-               disks      TEXT,
-               top_procs  TEXT
-        )"""
+
+def _get_conn() -> pymysql.connections.Connection:
+    return pymysql.connect(
+        host=MYSQL_HOST,
+        port=MYSQL_PORT,
+        user=MYSQL_USER,
+        password=MYSQL_PASS,
+        database=MYSQL_DB,
+        autocommit=True,
+        cursorclass=pymysql.cursors.Cursor,
     )
-    # дополняем недостающие поля при обновлении версии
-    cols = [r[1] for r in con.execute("PRAGMA table_info(metrics)")]
-    if "net_up" not in cols:
-        con.execute("ALTER TABLE metrics ADD COLUMN net_up REAL")
-    if "net_down" not in cols:
-        con.execute("ALTER TABLE metrics ADD COLUMN net_down REAL")
-    if "top_procs" not in cols:
-        con.execute("ALTER TABLE metrics ADD COLUMN top_procs TEXT")
-    con.execute(
-        "CREATE INDEX IF NOT EXISTS idx_metrics_secret_ts ON metrics(secret, ts)"
-    )
+
+
+def _maybe_migrate_sqlite(mysql_con: pymysql.connections.Connection) -> None:
+    if not METRIC_DB.exists():
+        return
+    with mysql_con.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM metrics")
+        if cur.fetchone()[0] > 0:
+            return
+    import sqlite3
+    con = sqlite3.connect(METRIC_DB)
+    rows = con.execute("SELECT * FROM metrics").fetchall()
+    if not rows:
+        return
+    with mysql_con.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO metrics (
+                secret, ts, cpu, ram, gpu, vram,
+                ram_used, ram_total, swap, swap_used, swap_total,
+                vram_used, vram_total, cpu_temp, gpu_temp,
+                net_up, net_down, uptime, disks, top_procs
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            rows,
+        )
+    METRIC_DB.rename(METRIC_DB.with_suffix(".sqlite.bak"))
+
+
+def _maybe_migrate_json(mysql_con: pymysql.connections.Connection) -> None:
+    if not DB_FILE.exists():
+        return
+    with mysql_con.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM secrets")
+        if cur.fetchone()[0] > 0:
+            return
+    data = json.loads(DB_FILE.read_text())
+    secrets = data.get("secrets", {})
+    active = data.get("active", {})
+    alerts = data.get("alerts", {})
+    alert_last = data.get("alert_last", {})
+    with mysql_con.cursor() as cur:
+        for secret, entry in secrets.items():
+            cur.execute(
+                "INSERT INTO secrets(secret, owners, nickname, pending) VALUES (%s,%s,%s,%s)",
+                (
+                    secret,
+                    json.dumps(entry.get("owners", [])),
+                    entry.get("nickname"),
+                    json.dumps(entry.get("pending", [])),
+                ),
+            )
+        for chat_id, s in active.items():
+            cur.execute(
+                "INSERT INTO active(chat_id, secret) VALUES (%s,%s)",
+                (str(chat_id), s),
+            )
+        for uid, cfg in alerts.items():
+            for s, metrics in cfg.items():
+                for metric, thr in metrics.items():
+                    cur.execute(
+                        "INSERT INTO alerts(uid, secret, metric, threshold) VALUES (%s,%s,%s,%s)",
+                        (uid, s, metric, thr),
+                    )
+        for key, ts in alert_last.items():
+            cur.execute(
+                "INSERT INTO alert_last(id, ts) VALUES (%s,%s)",
+                (key, int(ts)),
+            )
+    DB_FILE.rename(DB_FILE.with_suffix(".json.bak"))
+
+
+def _init_mysql() -> pymysql.connections.Connection:
+    con = _get_conn()
+    with con.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS metrics (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                secret VARCHAR(64),
+                ts INT,
+                cpu FLOAT,
+                ram FLOAT,
+                gpu FLOAT,
+                vram FLOAT,
+                ram_used FLOAT,
+                ram_total FLOAT,
+                swap FLOAT,
+                swap_used FLOAT,
+                swap_total FLOAT,
+                vram_used FLOAT,
+                vram_total FLOAT,
+                cpu_temp FLOAT,
+                gpu_temp FLOAT,
+                net_up FLOAT,
+                net_down FLOAT,
+                uptime INT,
+                disks TEXT,
+                top_procs TEXT,
+                INDEX secret_ts(secret, ts)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS secrets (
+                secret VARCHAR(64) PRIMARY KEY,
+                owners TEXT,
+                nickname TEXT,
+                pending TEXT
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS active (
+                chat_id VARCHAR(32) PRIMARY KEY,
+                secret VARCHAR(64)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS alerts (
+                uid VARCHAR(32),
+                secret VARCHAR(64),
+                metric VARCHAR(16),
+                threshold FLOAT,
+                PRIMARY KEY(uid, secret, metric)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS alert_last (
+                id VARCHAR(64) PRIMARY KEY,
+                ts INT
+            )
+            """
+        )
+    _maybe_migrate_sqlite(con)
+    _maybe_migrate_json(con)
     return con
 
 
-sql = _init_metric_db()
+sql = _init_mysql()
 
 
-def purge_old_metrics(days: int = 30):
+def purge_old_metrics(days: int = 30) -> None:
     cutoff = int(time.time()) - days * 86400
-    sql.execute("DELETE FROM metrics WHERE ts < ?", (cutoff,))
+    with sql.cursor() as cur:
+        cur.execute("DELETE FROM metrics WHERE ts < %s", (cutoff,))
 
 
-def record_metric(secret: str, data: Dict[str, Any]):
-    sql.execute(
-        """INSERT INTO metrics(
-               secret, ts, cpu, ram, gpu, vram,
-               ram_used, ram_total, swap, swap_used, swap_total,
-               vram_used, vram_total, cpu_temp, gpu_temp,
-               net_up, net_down, uptime, disks, top_procs
-           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            secret,
-            int(time.time()),
-            data.get("cpu"),
-            data.get("ram"),
-            data.get("gpu"),
-            data.get("vram"),
-            data.get("ram_used"),
-            data.get("ram_total"),
-            data.get("swap"),
-            data.get("swap_used"),
-            data.get("swap_total"),
-            data.get("vram_used"),
-            data.get("vram_total"),
-            data.get("cpu_temp"),
-            data.get("gpu_temp"),
-            data.get("net_up"),
-            data.get("net_down"),
-            data.get("uptime"),
-            None,
-            None,
-        ),
-    )
+def record_metric(secret: str, data: Dict[str, Any]) -> None:
+    with sql.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO metrics(
+                secret, ts, cpu, ram, gpu, vram,
+                ram_used, ram_total, swap, swap_used, swap_total,
+                vram_used, vram_total, cpu_temp, gpu_temp,
+                net_up, net_down, uptime, disks, top_procs
+            ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                secret,
+                int(time.time()),
+                data.get("cpu"),
+                data.get("ram"),
+                data.get("gpu"),
+                data.get("vram"),
+                data.get("ram_used"),
+                data.get("ram_total"),
+                data.get("swap"),
+                data.get("swap_used"),
+                data.get("swap_total"),
+                data.get("vram_used"),
+                data.get("vram_total"),
+                data.get("cpu_temp"),
+                data.get("gpu_temp"),
+                data.get("net_up"),
+                data.get("net_down"),
+                data.get("uptime"),
+                None,
+                None,
+            ),
+        )
 
 
 def _avg(vals: List[float | None]) -> float | None:
@@ -99,7 +221,7 @@ def _avg(vals: List[float | None]) -> float | None:
     return sum(vals) / len(vals) if vals else None
 
 
-def _avg_chunk(chunk: List[sqlite3.Row]) -> tuple[int, float | None, float | None, float | None, float | None, float | None, float | None]:
+def _avg_chunk(chunk: List[Tuple]) -> Tuple[int, float | None, float | None, float | None, float | None, float | None, float | None]:
     ts = chunk[-1][0]
     cpu = _avg([r[1] for r in chunk])
     ram = _avg([r[2] for r in chunk])
@@ -110,17 +232,17 @@ def _avg_chunk(chunk: List[sqlite3.Row]) -> tuple[int, float | None, float | Non
     return ts, cpu, ram, gpu, vram, up, down
 
 
-def fetch_metrics(secret: str, since: int) -> List[tuple[int, float]]:
-    rows = sql.execute(
-        "SELECT ts, cpu, ram, gpu, vram, net_up, net_down FROM metrics WHERE secret=? AND ts>=? ORDER BY ts ASC",
-        (secret, since),
-    ).fetchall()
-
+def fetch_metrics(secret: str, since: int) -> List[Tuple[int, float]]:
+    with sql.cursor() as cur:
+        cur.execute(
+            "SELECT ts, cpu, ram, gpu, vram, net_up, net_down FROM metrics WHERE secret=%s AND ts>=%s ORDER BY ts ASC",
+            (secret, since),
+        )
+        rows = cur.fetchall()
     if not rows:
         return []
-
     grouped = []
-    chunk: list[sqlite3.Row] = []
+    chunk: List[Tuple] = []
     for r in rows:
         chunk.append(r)
         if len(chunk) == 6:
@@ -131,7 +253,7 @@ def fetch_metrics(secret: str, since: int) -> List[tuple[int, float]]:
     return grouped
 
 
-def _avg_chunk_full(chunk: List[sqlite3.Row], avg_fn) -> Dict[str, Any]:
+def _avg_chunk_full(chunk: List[Tuple], avg_fn) -> Dict[str, Any]:
     r_last = chunk[-1]
     return {
         "ts": r_last[0],
@@ -149,10 +271,12 @@ def _avg_chunk_full(chunk: List[sqlite3.Row], avg_fn) -> Dict[str, Any]:
 
 
 def fetch_metrics_full(secret: str, since: int) -> List[Dict[str, Any]]:
-    rows = sql.execute(
-        "SELECT ts, cpu, ram, gpu, vram, net_up, net_down, ram_used, ram_total, vram_used, vram_total FROM metrics WHERE secret=? AND ts>=? ORDER BY ts ASC",
-        (secret, since),
-    ).fetchall()
+    with sql.cursor() as cur:
+        cur.execute(
+            "SELECT ts, cpu, ram, gpu, vram, net_up, net_down, ram_used, ram_total, vram_used, vram_total FROM metrics WHERE secret=%s AND ts>=%s ORDER BY ts ASC",
+            (secret, since),
+        )
+        rows = cur.fetchall()
     if not rows:
         return []
 
@@ -161,7 +285,7 @@ def fetch_metrics_full(secret: str, since: int) -> List[Dict[str, Any]]:
         return sum(vals) / len(vals) if vals else None
 
     grouped = []
-    chunk: List[sqlite3.Row] = []
+    chunk: List[Tuple] = []
     for r in rows:
         chunk.append(r)
         if len(chunk) == 6:
@@ -173,16 +297,65 @@ def fetch_metrics_full(secret: str, since: int) -> List[Dict[str, Any]]:
 
 
 def load_db() -> Dict[str, Any]:
-    if DB_FILE.exists():
-        data = json.loads(DB_FILE.read_text())
-    else:
-        data = {}
-    data.setdefault("secrets", {})
-    data.setdefault("active", {})
-    data.setdefault("alerts", {})
-    data.setdefault("alert_last", {})
+    data = {
+        "secrets": {},
+        "active": {},
+        "alerts": {},
+        "alert_last": {},
+    }
+    with sql.cursor() as cur:
+        cur.execute("SELECT secret, owners, nickname, pending FROM secrets")
+        for secret, owners, nickname, pending in cur.fetchall():
+            data["secrets"][secret] = {
+                "owners": json.loads(owners or "[]"),
+                "nickname": nickname,
+                "pending": json.loads(pending or "[]"),
+            }
+        cur.execute("SELECT chat_id, secret FROM active")
+        for chat_id, s in cur.fetchall():
+            data["active"][str(chat_id)] = s
+        cur.execute("SELECT uid, secret, metric, threshold FROM alerts")
+        for uid, s, metric, thr in cur.fetchall():
+            ucfg = data["alerts"].setdefault(uid, {})
+            scfg = ucfg.setdefault(s, {})
+            scfg[metric] = thr
+        cur.execute("SELECT id, ts FROM alert_last")
+        for key, ts in cur.fetchall():
+            data["alert_last"][key] = ts
     return data
 
 
-def save_db(db: Dict[str, Any]):
-    DB_FILE.write_text(json.dumps(db, indent=2))
+def save_db(db: Dict[str, Any]) -> None:
+    with sql.cursor() as cur:
+        cur.execute("DELETE FROM secrets")
+        for secret, entry in db.get("secrets", {}).items():
+            cur.execute(
+                "INSERT INTO secrets(secret, owners, nickname, pending) VALUES(%s,%s,%s,%s)",
+                (
+                    secret,
+                    json.dumps(entry.get("owners", [])),
+                    entry.get("nickname"),
+                    json.dumps(entry.get("pending", [])),
+                ),
+            )
+        cur.execute("DELETE FROM active")
+        for chat_id, s in db.get("active", {}).items():
+            cur.execute(
+                "INSERT INTO active(chat_id, secret) VALUES(%s,%s)",
+                (str(chat_id), s),
+            )
+        cur.execute("DELETE FROM alerts")
+        for uid, cfg in db.get("alerts", {}).items():
+            for s, metrics in cfg.items():
+                for metric, thr in metrics.items():
+                    cur.execute(
+                        "INSERT INTO alerts(uid, secret, metric, threshold) VALUES(%s,%s,%s,%s)",
+                        (uid, s, metric, thr),
+                    )
+        cur.execute("DELETE FROM alert_last")
+        for key, ts in db.get("alert_last", {}).items():
+            cur.execute(
+                "INSERT INTO alert_last(id, ts) VALUES(%s,%s)",
+                (key, int(ts)),
+            )
+

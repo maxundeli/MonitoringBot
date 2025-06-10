@@ -11,13 +11,13 @@ MonitoringBot consists of:
 | **server/** | FastAPI application that receives, stores and visualises metrics. Integrates with a Telegram bot for user interaction. Run with `python -m server`. |
 | **client/** | Cross‑platform agent that collects host metrics (CPU, RAM, GPU, VRAM, disk, uptime) and periodically pushes them to the server. Run with `python -m client`. |
 
-The server stores incoming data in SQLite and can generate on‑demand plots delivered via Telegram.
+The server stores incoming data in a MySQL database and can generate on‑demand plots delivered via Telegram.
 
 ## Key Features
 * **Metric collection** – CPU and GPU load, memory usage, per‑disk utilisation and system uptime.
 * **Secure communication** – WebSocket over TLS with automatically generated self‑signed certificates (fallback to WS for testing).
 * **Telegram integration** – Inline commands for status queries and remote actions (reboot / shutdown).
-* **Data persistence** – Lightweight storage using SQLite; suitable for single‑instance deployments.
+* **Data persistence** – Uses MySQL for reliable storage and multi‑instance deployments.
 * **WebSocket transport** – persistent bidirectional connection lets the server trigger tasks like speed tests instantly and receive full status without delay.
 * **Visualization** – Matplotlib charts returned directly in chat.
 
@@ -84,6 +84,11 @@ python -m client
 | `BOT_TOKEN` | server | — | Telegram bot token (required) |
 | `PORT` | server | 8000 | WebSocket listening port |
 | `GRAPH_WORKERS` | server | 1 | Processes for each chart (terminated after use) |
+| `MYSQL_HOST` | server | localhost | MySQL server hostname |
+| `MYSQL_PORT` | server | 3306 | MySQL server port |
+| `MYSQL_USER` | server | root | MySQL user |
+| `MYSQL_PASS` | server | "" | MySQL password |
+| `MYSQL_DB` | server | monitoring | MySQL database name |
 | `AGENT_SECRET` | client | — | Secret linking agent to server |
 | `AGENT_SERVER_IP` | client | prompt | Server IPv4 address |
 | `AGENT_PORT` | client | 8000 | Server port |
