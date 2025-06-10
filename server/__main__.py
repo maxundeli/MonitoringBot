@@ -791,7 +791,7 @@ async def cmd_plot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Ключ не найден.")
 
     try:
-        buf = plot_custom(secret, metrics, seconds, top, unit)
+        buf = await run_plot(plot_custom, secret, metrics, seconds, top, unit)
     except ValueError as exc:
         return await update.message.reply_text(f"❌ {exc}")
     if not buf:
@@ -801,8 +801,10 @@ async def cmd_plot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if seconds >= 86400:
         doc = InputFile(buf, filename="plot.png")
         await ctx.bot.send_document(chat_id=update.effective_chat.id, document=doc, caption=caption)
+        buf.close()
     else:
         await ctx.bot.send_photo(chat_id=update.effective_chat.id, photo=buf, caption=caption)
+        buf.close()
 
 
 # ─────────────────────- Callback handler ───────────────────────────────────
