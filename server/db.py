@@ -3,6 +3,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 import sys
+import subprocess
+import shutil
+import atexit
 
 import pymysql
 
@@ -16,9 +19,70 @@ MYSQL_USER = "root"
 MYSQL_PASS = ""
 MYSQL_DB = "monitoring"
 
+# Локальный экземпляр MySQL хранит данные в подкаталоге проекта
+MYSQL_DATA = Path("mysql_data")
+MYSQL_PROC: subprocess.Popen | None = None
+
+
+def _start_mysql() -> None:
+    """Запустить локальный mysqld, если он ещё не запущен."""
+    global MYSQL_PROC
+    if MYSQL_PROC and MYSQL_PROC.poll() is None:
+        return
+
+    mysqld = shutil.which("mysqld")
+    if not mysqld:
+        print("\u274c mysqld не найден. Установите MySQL или MariaDB", file=sys.stderr)
+        raise SystemExit(1)
+
+    MYSQL_DATA.mkdir(exist_ok=True)
+    if not (MYSQL_DATA / "mysql").exists():
+        subprocess.run([mysqld, "--initialize-insecure", f"--datadir={MYSQL_DATA}"], check=True)
+
+    MYSQL_PROC = subprocess.Popen(
+        [
+            mysqld,
+            f"--datadir={MYSQL_DATA}",
+            f"--port={MYSQL_PORT}",
+            "--bind-address=127.0.0.1",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    for _ in range(30):
+        try:
+            con = pymysql.connect(
+                host=MYSQL_HOST,
+                port=MYSQL_PORT,
+                user=MYSQL_USER,
+                password=MYSQL_PASS,
+                autocommit=True,
+            )
+            con.close()
+            break
+        except pymysql.err.OperationalError:
+            time.sleep(1)
+    else:
+        print("\u274c \u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u044c MySQL", file=sys.stderr)
+        raise SystemExit(1)
+
+
+def _stop_mysql() -> None:
+    if MYSQL_PROC and MYSQL_PROC.poll() is None:
+        MYSQL_PROC.terminate()
+        try:
+            MYSQL_PROC.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            MYSQL_PROC.kill()
+
+
+atexit.register(_stop_mysql)
+
 
 def _ensure_database() -> None:
-    """Создать базу, если её ещё нет."""
+    """Запустить сервер и создать базу при первом запуске."""
+    _start_mysql()
     try:
         con = pymysql.connect(
             host=MYSQL_HOST,

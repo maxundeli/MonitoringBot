@@ -11,7 +11,7 @@ MonitoringBot consists of:
 | **server/** | FastAPI application that receives, stores and visualises metrics. Integrates with a Telegram bot for user interaction. Run with `python -m server`. |
 | **client/** | Cross‑platform agent that collects host metrics (CPU, RAM, GPU, VRAM, disk, uptime) and periodically pushes them to the server. Run with `python -m client`. |
 
-The server stores incoming data in a MySQL database and can generate on‑demand plots delivered via Telegram.
+The server stores incoming data in a MySQL database (started automatically) and can generate on‑demand plots delivered via Telegram.
 
 ## Key Features
 * **Metric collection** – CPU and GPU load, memory usage, per‑disk utilisation and system uptime.
@@ -45,11 +45,6 @@ source .venv/bin/activate      # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Prepare the MySQL database
-Start a local MySQL server. The application uses a database named `monitoring`
-with the credentials `root`/`` (empty password) and creates it automatically on
-first launch. Existing data from `metrics.sqlite` and `db.json` will be imported
-if those files are present.
 ## Quick Start
 
 ### 1. Launch the server
@@ -59,6 +54,8 @@ export BOT_TOKEN="<telegram‑bot‑token>"
 python -m server
 ```
 The first launch generates `cert.pem` and `key.pem` for TLS.
+The MySQL server will also be started automatically and store its data in the
+`mysql_data` directory.
 
 ### 2. Register an agent
 In the Telegram chat, obtain an agent secret:
@@ -117,27 +114,6 @@ On Windows double clicking the icon toggles the console window. If the program
 was built using `--noconsole`, the console will be allocated when you double
 click.
 
-### Running the server as a service
-To start the server automatically on boot you can create a systemd service
-on Linux. Example unit file:
-
-```ini
-[Unit]
-Description=MonitoringBot server
-After=network.target
-
-[Service]
-WorkingDirectory=/path/to/MonitoringBot
-ExecStart=/usr/bin/python -m server
-Environment=BOT_TOKEN=YOUR_TELEGRAM_TOKEN
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Copy this to `/etc/systemd/system/monitoringbot.service`, update the path and
-token, then run `systemctl enable --now monitoringbot`.
 
 ## Project Structure
 ```
