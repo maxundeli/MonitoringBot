@@ -1,5 +1,4 @@
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -10,11 +9,34 @@ import pymysql
 DB_FILE = Path("db.json")
 METRIC_DB = Path("metrics.sqlite")
 
-MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
-MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
-MYSQL_USER = os.getenv("MYSQL_USER", "root")
-MYSQL_PASS = os.getenv("MYSQL_PASS", "")
-MYSQL_DB = os.getenv("MYSQL_DB", "monitoring")
+# Параметры подключения к MySQL. Сервер создаёт базу автоматически.
+MYSQL_HOST = "localhost"
+MYSQL_PORT = 3306
+MYSQL_USER = "root"
+MYSQL_PASS = ""
+MYSQL_DB = "monitoring"
+
+
+def _ensure_database() -> None:
+    """Создать базу, если её ещё нет."""
+    try:
+        con = pymysql.connect(
+            host=MYSQL_HOST,
+            port=MYSQL_PORT,
+            user=MYSQL_USER,
+            password=MYSQL_PASS,
+            autocommit=True,
+            cursorclass=pymysql.cursors.Cursor,
+        )
+    except pymysql.err.OperationalError as exc:
+        print(
+            f"\u274c \u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0438\u0442\u044c\u0441\u044f \u043a MySQL ({MYSQL_HOST}:{MYSQL_PORT}): {exc}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    with con.cursor() as cur:
+        cur.execute(f"CREATE DATABASE IF NOT EXISTS `{MYSQL_DB}`")
+    con.close()
 
 
 def _get_conn() -> pymysql.connections.Connection:
@@ -100,6 +122,7 @@ def _maybe_migrate_json(mysql_con: pymysql.connections.Connection) -> None:
 
 
 def _init_mysql() -> pymysql.connections.Connection:
+    _ensure_database()
     try:
         con = _get_conn()
     except pymysql.err.OperationalError as exc:

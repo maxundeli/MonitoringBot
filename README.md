@@ -46,19 +46,11 @@ pip install -r requirements.txt
 ```
 
 ### Prepare the MySQL database
-Make sure a MySQL server is running and an empty database exists. Configure connection parameters using environment variables:
-```bash
-export MYSQL_HOST=localhost
-export MYSQL_PORT=3306
-export MYSQL_USER=root
-export MYSQL_PASS=<password>
-export MYSQL_DB=monitoring
-```
-On first launch the server will create tables and migrate existing `metrics.sqlite` and `db.json` files if found.
+Запустите локальный сервер MySQL. Приложение использует базу `monitoring` c учётными данными `root`/`""` и создаёт её автоматически при первом запуске. Также будут перенесены данные из `metrics.sqlite` и `db.json`, если такие файлы существуют.
 ## Quick Start
 
 ### 1. Launch the server
-Set the required environment variables and start the FastAPI application:
+Укажите токен бота и запустите FastAPI приложение:
 ```bash
 export BOT_TOKEN="<telegram‑bot‑token>"
 python -m server
@@ -94,11 +86,6 @@ python -m client
 | `BOT_TOKEN` | server | — | Telegram bot token (required) |
 | `PORT` | server | 8000 | WebSocket listening port |
 | `GRAPH_WORKERS` | server | 1 | Processes for each chart (terminated after use) |
-| `MYSQL_HOST` | server | localhost | MySQL server hostname |
-| `MYSQL_PORT` | server | 3306 | MySQL server port |
-| `MYSQL_USER` | server | root | MySQL user |
-| `MYSQL_PASS` | server | "" | MySQL password |
-| `MYSQL_DB` | server | monitoring | MySQL database name |
 | `AGENT_SECRET` | client | — | Secret linking agent to server |
 | `AGENT_SERVER_IP` | client | prompt | Server IPv4 address |
 | `AGENT_PORT` | client | 8000 | Server port |
