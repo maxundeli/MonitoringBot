@@ -14,7 +14,6 @@ from html import escape
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 import time
-import sqlite3
 import string
 from telegram import InputFile
 import io
