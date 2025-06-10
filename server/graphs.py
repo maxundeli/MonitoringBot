@@ -9,6 +9,7 @@ from typing import List
 import os
 import re
 from concurrent.futures import ProcessPoolExecutor, Future
+import multiprocessing as mp
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -31,7 +32,8 @@ def _new_executor() -> ProcessPoolExecutor:
     except ValueError:
         workers_num = 1
     workers_num = max(workers_num, 1)
-    return ProcessPoolExecutor(max_workers=workers_num)
+    ctx = mp.get_context("spawn")
+    return ProcessPoolExecutor(max_workers=workers_num, mp_context=ctx)
 
 
 def submit(func, *args, **kwargs) -> Future:

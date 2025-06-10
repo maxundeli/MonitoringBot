@@ -18,6 +18,7 @@ import io
 import subprocess
 import sys
 import threading
+import multiprocessing as mp
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Mapping
@@ -46,7 +47,6 @@ from .graphs import (
     plot_metric,
     plot_net,
     plot_all_metrics,
-    submit,
 )
 
 # ────────────────────────── CONFIG ─────────────────────────────────────────
@@ -182,9 +182,17 @@ def disk_bar(p: float, length: int = 10) -> str:
     return "█" * filled + "░" * (length - filled)
 
 async def run_plot(func, *args):
-    """Run plotting function in a worker process."""
-    fut = submit(func, *args)
-    return await asyncio.wrap_future(fut)
+    """Run plotting function in a temporary worker process."""
+    workers = os.getenv("GRAPH_WORKERS", "1")
+    try:
+        num = int(workers)
+    except ValueError:
+        num = 1
+    num = max(num, 1)
+    ctx = mp.get_context("spawn")
+    loop = asyncio.get_running_loop()
+    with ProcessPoolExecutor(max_workers=num, mp_context=ctx) as ex:
+        return await loop.run_in_executor(ex, lambda: func(*args))
 async def check_speedtest_done(ctx: ContextTypes.DEFAULT_TYPE):
     job  = ctx.job
     data = job.data
@@ -1013,12 +1021,14 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 document=doc,
                 caption=caption,
             )
+            buf.close()
         else:
             await ctx.bot.send_photo(
                 chat_id=q.message.chat_id,
                 photo=buf,
                 caption=caption,
             )
+            buf.close()
         return
 
 # ────────────────────────── FastAPI for agents ─────────────────────────────
