@@ -83,6 +83,7 @@ python -m client
 |----------|-----------|---------|---------|
 | `BOT_TOKEN` | server | — | Telegram bot token (required) |
 | `PORT` | server | 8000 | WebSocket listening port |
+| `GRAPH_WORKERS` | server | 1 | Processes for each chart (terminated after use) |
 | `AGENT_SECRET` | client | — | Secret linking agent to server |
 | `AGENT_SERVER_IP` | client | prompt | Server IPv4 address |
 | `AGENT_PORT` | client | 8000 | Server port |
