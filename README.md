@@ -90,6 +90,7 @@ python -m client
 | `AGENT_INTERVAL` | client | 5 | Seconds between metric pushes |
 | `AGENT_RECONNECT_DELAY` | client | 5 | Seconds before reconnecting |
 | `AGENT_VERIFY_SSL` | client | 1 | `0` = disable verification |
+| `AGENT_ICON_FILE` | client | `client/icon.png` if exists | Tray icon image path |
 
 Values are persisted to a local `.env` file after the first run.
 
@@ -99,6 +100,17 @@ fingerprint to `~/.bot_fingerprint.json`. If the certificate later changes
 (e.g. the server was reinstalled), the agent will stop with a dialog
 window advising you to delete this file and restart. This prevents silently
 accepting unexpected certificates.
+
+### Tray icon
+When the client starts, an icon appears in the system tray. Right-click this icon to exit the program. To use your own image, set `AGENT_ICON_FILE` to the path of a PNG before launching:
+```bash
+export AGENT_ICON_FILE="/path/my_icon.png"
+python -m client
+```
+If this variable is not set, the client will try to load `client/icon.png` from the program directory.
+On Windows double clicking the icon toggles the console window. If the program
+was built using `--noconsole`, the console will be allocated when you double
+click.
 
 ## Project Structure
 ```

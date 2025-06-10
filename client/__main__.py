@@ -23,9 +23,12 @@ import shutil
 import subprocess
 
 import psutil
+from PIL import Image
+import pystray
 from client.worker import run_speedtest, run_diagnostics, submit, shutdown_executor
 
 atexit.register(shutdown_executor)
+atexit.register(lambda: TRAY_ICON and TRAY_ICON.stop())
 # Кэш для вычисления CPU без задержки
 PROC_CACHE: dict[int, tuple[float, float]] = {}
 GPU_VENDOR: str | None = None
@@ -36,10 +39,57 @@ CPU_CORES = psutil.cpu_count(logical=False) or psutil.cpu_count() or 1
 import websockets
 WS_LOOP: asyncio.AbstractEventLoop | None = None
 WS_CONN: websockets.WebSocketClientProtocol | None = None
+TRAY_ICON: pystray.Icon | None = None
 try:
     import pynvml
 except Exception:
     pynvml = None
+
+if os.name == "nt":
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    user32 = ctypes.windll.user32
+
+    SW_HIDE = 0
+    SW_RESTORE = 9
+
+    def _console_hwnd() -> int:
+        return kernel32.GetConsoleWindow()
+
+    def toggle_console() -> None:
+        hwnd = _console_hwnd()
+        if not hwnd:
+            if kernel32.AllocConsole():
+                sys.stdout = open("CONOUT$", "w", buffering=1)
+                sys.stderr = open("CONOUT$", "w", buffering=1)
+                sys.stdin = open("CONIN$", "r")
+                hwnd = _console_hwnd()
+        if hwnd:
+            if user32.IsWindowVisible(hwnd):
+                user32.ShowWindow(hwnd, SW_HIDE)
+            else:
+                user32.ShowWindow(hwnd, SW_RESTORE)
+                user32.SetForegroundWindow(hwnd)
+
+    def _hide_console_on_minimize() -> None:
+        hwnd = _console_hwnd()
+        if not hwnd:
+            return
+        visible = True
+        while True:
+            time.sleep(0.5)
+            if visible and user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, SW_HIDE)
+                visible = False
+            elif not visible and user32.IsWindowVisible(hwnd):
+                visible = True
+            if not user32.IsWindow(hwnd):
+                break
+else:
+    def toggle_console() -> None:
+        pass
+
 
 log = logging.getLogger("pc-agent")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -124,6 +174,47 @@ SCHEME = "https"
 SERVER = f"{SCHEME}://{SERVER_IP}:{PORT}"
 INTERVAL = int(os.getenv("AGENT_INTERVAL", "5"))
 RECONNECT_DELAY = int(os.getenv("AGENT_RECONNECT_DELAY", "5"))
+
+ICON_FILE = os.getenv("AGENT_ICON_FILE")
+if not ICON_FILE:
+    candidate = Path(__file__).with_name("icon.png")
+    if candidate.exists():
+        ICON_FILE = str(candidate)
+if ICON_FILE and not Path(ICON_FILE).exists():
+    log.warning("Tray icon not found: %s", ICON_FILE)
+    ICON_FILE = None
+
+
+def _tray_exit(icon, item) -> None:
+    icon.visible = False
+    icon.stop()
+    if WS_LOOP:
+        WS_LOOP.call_soon_threadsafe(WS_LOOP.stop)
+    else:
+        os._exit(0)
+
+
+def start_tray_icon() -> pystray.Icon:
+    """Запустить иконку в системном трее."""
+    image = None
+    try:
+        if ICON_FILE:
+            image = Image.open(ICON_FILE)
+    except Exception as exc:
+        log.error("Failed to load tray icon %s: %s", ICON_FILE, exc)
+    if image is None:
+        image = Image.new("RGB", (64, 64), color="blue")
+    menu = pystray.Menu(
+        pystray.MenuItem(
+            "Показать/скрыть консоль",
+            lambda icon, item: toggle_console(),
+            default=True,
+        ),
+        pystray.MenuItem("Выход", _tray_exit),
+    )
+    icon = pystray.Icon("MonitoringBot", image, "MonitoringBot", menu)
+    threading.Thread(target=icon.run, daemon=True).start()
+    return icon
 
 log.info(
     "Config → server %s verify=%s interval %ss reconnect %ss",
@@ -827,6 +918,10 @@ async def ws_main() -> None:
 # ────────────────────────── main loop ─────────────────────────────────────
 
 def main() -> None:
+    global TRAY_ICON
+    TRAY_ICON = start_tray_icon()
+    if os.name == "nt":
+        threading.Thread(target=_hide_console_on_minimize, daemon=True).start()
     asyncio.run(ws_main())
 
 
