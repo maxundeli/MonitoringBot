@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from concurrent.futures import ProcessPoolExecutor
 
 """remote_bot_server"""
@@ -194,7 +195,8 @@ async def run_plot(func, *args):
     ctx = mp.get_context("spawn")
     loop = asyncio.get_running_loop()
     with ProcessPoolExecutor(max_workers=num, mp_context=ctx) as ex:
-        return await loop.run_in_executor(ex, lambda: func(*args))
+        part = functools.partial(func, *args)
+        return await loop.run_in_executor(ex, part)
 async def check_speedtest_done(ctx: ContextTypes.DEFAULT_TYPE):
     job  = ctx.job
     data = job.data
