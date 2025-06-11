@@ -371,6 +371,7 @@ from typing import Mapping
 def format_status(row: Mapping[str, Any]) -> str:
     lines = [
         "💻 *PC stats*",
+        f"🕒 Updated: {datetime.fromtimestamp(row['ts']).strftime('%d.%m %H:%M:%S')}",
         f"⏳ Uptime: {timedelta(seconds=int(row['uptime'] or 0))}",
         "*━━━━━━━━━━━CPU━━━━━━━━━━━*",
         f"🖥️ CPU: {row['cpu']:.1f}%",
