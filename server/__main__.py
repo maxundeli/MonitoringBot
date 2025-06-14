@@ -365,30 +365,52 @@ def gen_secret(n: int = 20):
 def is_owner(entry: Dict[str, Any], user_id: int) -> bool:
     return user_id in entry.get("owners", [])
 
-from typing import Sequence
+from typing import Sequence, Mapping
 
-# row is returned from MySQL as a tuple. The column order is fixed so we
-# access values by index just like with sqlite3.Row.
-def format_status(row: Sequence[Any]) -> str:
-    ts = row[1]
-    cpu = row[2]
-    ram = row[3]
-    gpu = row[4]
-    vram = row[5]
-    ram_used = row[6]
-    ram_total = row[7]
-    swap = row[8]
-    swap_used = row[9]
-    swap_total = row[10]
-    vram_used = row[11]
-    vram_total = row[12]
-    cpu_temp = row[13]
-    gpu_temp = row[14]
-    net_up = row[15]
-    net_down = row[16]
-    uptime = row[17]
-    disks = row[18]
-    top_procs = row[19]
+# ``format_status`` accepts either a DB row (tuple) or a mapping returned
+# by the agent in ``oneshot`` mode.  The column order for tuples matches the
+# table schema, while dicts use keys.
+def format_status(row: Sequence[Any] | Mapping[str, Any]) -> str:
+    if isinstance(row, Mapping):
+        ts = row.get("ts")
+        cpu = row.get("cpu")
+        ram = row.get("ram")
+        gpu = row.get("gpu")
+        vram = row.get("vram")
+        ram_used = row.get("ram_used")
+        ram_total = row.get("ram_total")
+        swap = row.get("swap")
+        swap_used = row.get("swap_used")
+        swap_total = row.get("swap_total")
+        vram_used = row.get("vram_used")
+        vram_total = row.get("vram_total")
+        cpu_temp = row.get("cpu_temp")
+        gpu_temp = row.get("gpu_temp")
+        net_up = row.get("net_up")
+        net_down = row.get("net_down")
+        uptime = row.get("uptime")
+        disks = row.get("disks")
+        top_procs = row.get("top_procs")
+    else:
+        ts = row[1]
+        cpu = row[2]
+        ram = row[3]
+        gpu = row[4]
+        vram = row[5]
+        ram_used = row[6]
+        ram_total = row[7]
+        swap = row[8]
+        swap_used = row[9]
+        swap_total = row[10]
+        vram_used = row[11]
+        vram_total = row[12]
+        cpu_temp = row[13]
+        gpu_temp = row[14]
+        net_up = row[15]
+        net_down = row[16]
+        uptime = row[17]
+        disks = row[18]
+        top_procs = row[19]
 
     lines = [
         "💻 *PC stats*",
