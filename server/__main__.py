@@ -14,7 +14,6 @@ from html import escape
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 import time
-import sqlite3
 import string
 from telegram import InputFile
 import io
@@ -24,7 +23,7 @@ import threading
 import multiprocessing as mp
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Mapping
+from typing import Any, Dict, List, Optional
 
 import matplotlib
 import uvicorn
@@ -366,21 +365,65 @@ def gen_secret(n: int = 20):
 def is_owner(entry: Dict[str, Any], user_id: int) -> bool:
     return user_id in entry.get("owners", [])
 
-from typing import Mapping
+from typing import Sequence, Mapping
 
-def format_status(row: Mapping[str, Any]) -> str:
+# ``format_status`` accepts either a DB row (tuple) or a mapping returned
+# by the agent in ``oneshot`` mode.  The column order for tuples matches the
+# table schema, while dicts use keys.
+def format_status(row: Sequence[Any] | Mapping[str, Any]) -> str:
+    if isinstance(row, Mapping):
+        ts = row.get("ts")
+        cpu = row.get("cpu")
+        ram = row.get("ram")
+        gpu = row.get("gpu")
+        vram = row.get("vram")
+        ram_used = row.get("ram_used")
+        ram_total = row.get("ram_total")
+        swap = row.get("swap")
+        swap_used = row.get("swap_used")
+        swap_total = row.get("swap_total")
+        vram_used = row.get("vram_used")
+        vram_total = row.get("vram_total")
+        cpu_temp = row.get("cpu_temp")
+        gpu_temp = row.get("gpu_temp")
+        net_up = row.get("net_up")
+        net_down = row.get("net_down")
+        uptime = row.get("uptime")
+        disks = row.get("disks")
+        top_procs = row.get("top_procs")
+    else:
+        ts = row[1]
+        cpu = row[2]
+        ram = row[3]
+        gpu = row[4]
+        vram = row[5]
+        ram_used = row[6]
+        ram_total = row[7]
+        swap = row[8]
+        swap_used = row[9]
+        swap_total = row[10]
+        vram_used = row[11]
+        vram_total = row[12]
+        cpu_temp = row[13]
+        gpu_temp = row[14]
+        net_up = row[15]
+        net_down = row[16]
+        uptime = row[17]
+        disks = row[18]
+        top_procs = row[19]
+
     lines = [
         "💻 *PC stats*",
-        f"🕒 Updated: {datetime.fromtimestamp(row['ts']).strftime('%d.%m %H:%M:%S')}",
-        f"⏳ Uptime: {timedelta(seconds=int(row['uptime'] or 0))}",
+        f"🕒 Updated: {datetime.fromtimestamp(ts).strftime('%d.%m %H:%M:%S')}",
+        f"⏳ Uptime: {timedelta(seconds=int(uptime or 0))}",
         "*━━━━━━━━━━━CPU━━━━━━━━━━━*",
-        f"🖥️ CPU: {row['cpu']:.1f}%",
-        f"🌡️ CPU Temp: {row['cpu_temp']:.1f} °C" if row['cpu_temp'] is not None else "🌡️ CPU Temp: N/A",
+        f"🖥️ CPU: {cpu:.1f}%",
+        f"🌡️ CPU Temp: {cpu_temp:.1f} °C" if cpu_temp is not None else "🌡️ CPU Temp: N/A",
         "*━━━━━━━━━━━RAM━━━━━━━━━━━*",
-        f"🧠 RAM: {human_bytes(row['ram_used'])} / {human_bytes(row['ram_total'])} ({row['ram']:.1f}%)",
-        f"🧠 SWAP: {human_bytes(row['swap_used'])} / {human_bytes(row['swap_total'])} ({row['swap']:.1f}%)",
+        f"🧠 RAM: {human_bytes(ram_used)} / {human_bytes(ram_total)} ({ram:.1f}%)",
+        f"🧠 SWAP: {human_bytes(swap_used)} / {human_bytes(swap_total)} ({swap:.1f}%)",
     ]
-    procs = json.loads(row['top_procs']) if row['top_procs'] else []
+    procs = json.loads(top_procs) if top_procs else []
     if procs:
         lines.append("*━━━━━━━━━TOP CPU━━━━━━━━━*")
         for p in procs:
@@ -391,24 +434,24 @@ def format_status(row: Mapping[str, Any]) -> str:
             lines.append(
                 f"⚙️ {name}: 🖥️ {p['cpu']:.1f}% 🧠 {human_bytes(p['ram'])}"
             )
-    if row['net_up'] is not None and row['net_down'] is not None:
+    if net_up is not None and net_down is not None:
         lines.extend([
             "*━━━━━━━━━━━NET━━━━━━━━━━━*",
-            f"📡 Net: ↑ {human_net_speed(row['net_up'])} ↓ {human_net_speed(row['net_down'])}",
+            f"📡 Net: ↑ {human_net_speed(net_up)} ↓ {human_net_speed(net_down)}",
         ])
-    if row['gpu'] is not None:
+    if gpu is not None:
         lines.extend([
             "*━━━━━━━━━━━GPU━━━━━━━━━━━*",
-            f"🎮 GPU: {row['gpu']:.1f}%",
+            f"🎮 GPU: {gpu:.1f}%",
         ])
-        if row['vram_used'] is not None:
+        if vram_used is not None:
             lines.append(
-                f"🗄️ VRAM: {row['vram_used']:.0f} / {row['vram_total']:.0f} MiB ({row['vram']:.1f}%)"
+                f"🗄️ VRAM: {vram_used:.0f} / {vram_total:.0f} MiB ({vram:.1f}%)"
             )
-        if row['gpu_temp'] is not None:
-            lines.append(f"🌡️ GPU Temp: {row['gpu_temp']:.0f} °C")
+        if gpu_temp is not None:
+            lines.append(f"🌡️ GPU Temp: {gpu_temp:.0f} °C")
 
-    disks = json.loads(row['disks']) if row['disks'] else []
+    disks = json.loads(disks) if disks else []
     if disks:
         lines.append("*━━━━━━━━━━━DISKS━━━━━━━━━━*")
         for d in disks:
