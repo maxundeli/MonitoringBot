@@ -42,6 +42,23 @@ class MySQL:
         self._init_schema()
         self._maybe_migrate()
 
+    def execute(self, query: str, params: tuple | None = None):
+        """Execute a query and return a lightweight result object."""
+        query = query.replace("?", "%s")
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute(query, params or ())
+            rows = cur.fetchall() if cur.description else []
+            cur.close()
+        class _Res:
+            def __init__(self, r):
+                self._rows = r
+            def fetchone(self):
+                return self._rows[0] if self._rows else None
+            def fetchall(self):
+                return self._rows
+        return _Res(rows)
+
     def _init_schema(self) -> None:
         with self.conn.cursor() as cur:
             cur.execute(
