@@ -11,13 +11,13 @@ MonitoringBot consists of:
 | **server/** | FastAPI application that receives, stores and visualises metrics. Integrates with a Telegram bot for user interaction. Run with `python -m server`. |
 | **client/** | Cross‑platform agent that collects host metrics (CPU, RAM, GPU, VRAM, disk, uptime) and periodically pushes them to the server. Run with `python -m client`. |
 
-The server stores incoming data in SQLite and can generate on‑demand plots delivered via Telegram.
+The server stores incoming data in a MySQL database and can generate on‑demand plots delivered via Telegram.
 
 ## Key Features
 * **Metric collection** – CPU and GPU load, memory usage, per‑disk utilisation and system uptime.
 * **Secure communication** – WebSocket over TLS with automatically generated self‑signed certificates (fallback to WS for testing).
 * **Telegram integration** – Inline commands for status queries and remote actions (reboot / shutdown).
-* **Data persistence** – Lightweight storage using SQLite; suitable for single‑instance deployments.
+* **Data persistence** – Uses MySQL for persistent storage.
 * **WebSocket transport** – persistent bidirectional connection lets the server trigger tasks like speed tests instantly and receive full status without delay.
 * **Visualization** – Matplotlib charts returned directly in chat.
 
@@ -44,6 +44,28 @@ source .venv/bin/activate      # On Windows: .venv\Scripts\activate
 ```bash
 pip install -r requirements.txt
 ```
+
+### Start MySQL server
+On Linux systems you can run:
+```bash
+sudo apt install mysql-server
+sudo service mysql start
+```
+Optionally run `sudo mysql_secure_installation` to set the root password.
+The application will create the `monitoring` database automatically.
+Set these environment variables before launching the server if you use a custom configuration:
+`MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DB`.
+
+On Windows you can download the **MySQL Community Server** installer from
+<https://dev.mysql.com/downloads/mysql/> or install via
+[Chocolatey](https://chocolatey.org/):
+
+```powershell
+choco install mysql
+# then start the service
+net start mysql
+```
+Configuration and environment variables are the same as on Linux.
 
 ## Quick Start
 
