@@ -275,6 +275,7 @@ def gather_top_processes(count: int = 5) -> List[dict]:
 
     now = time.time()
     aggregated: dict[str, dict[str, float | int]] = {}
+    seen_pids: set[int] = set()
 
     for p in psutil.process_iter(["pid", "name"]):
         try:
@@ -290,6 +291,7 @@ def gather_top_processes(count: int = 5) -> List[dict]:
                 if dt > 0:
                     cpu = (cpu_time - prev[0]) / dt * 100
             PROC_CACHE[p.pid] = (cpu_time, now)
+            seen_pids.add(p.pid)
 
             mem = p.memory_info().rss
             cpu /= CPU_CORES
@@ -301,6 +303,10 @@ def gather_top_processes(count: int = 5) -> List[dict]:
             agg["count"] += 1
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
+
+    for pid in list(PROC_CACHE):
+        if pid not in seen_pids:
+            PROC_CACHE.pop(pid, None)
 
     res = []
     for data in aggregated.values():
@@ -843,7 +849,7 @@ def do_shutdown():
 async def _send_metrics_loop(ws: websockets.WebSocketClientProtocol) -> None:
     """Периодическая отправка метрик."""
     psutil.cpu_percent(interval=None)
-    gather_top_processes()
+    gather_top_processes()  # prime process cache
     init_gpu_metrics()
     while True:
         try:
@@ -853,6 +859,8 @@ async def _send_metrics_loop(ws: websockets.WebSocketClientProtocol) -> None:
             log.error("WS send error: %s", exc)
             break
         await asyncio.sleep(INTERVAL)
+        # update CPU usage cache for accurate top processes
+        gather_top_processes()
 
 
 async def _recv_loop(ws: websockets.WebSocketClientProtocol) -> None:
