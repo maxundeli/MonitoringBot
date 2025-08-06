@@ -33,8 +33,6 @@ from client.worker import run_speedtest, run_diagnostics, submit, shutdown_execu
 
 atexit.register(shutdown_executor)
 atexit.register(lambda: TRAY_ICON and TRAY_ICON.stop())
-# Кэш для вычисления CPU без задержки
-PROC_CACHE: dict[int, tuple[float, float]] = {}
 GPU_VENDOR: str | None = None
 GPU_METRIC_FUNCS: list = []
 NVML_INITED = False
@@ -267,33 +265,34 @@ def gather_disks_metrics() -> List[dict]:
     return res
 
 
-def gather_top_processes(count: int = 5) -> List[dict]:
-    """Вернуть топ процессов по загрузке CPU с учётом RAM.
+def gather_top_processes(count: int = 5, interval: float = 0.1) -> List[dict]:
+    """Return top processes by CPU usage taking RAM into account.
 
-    Процессы с одинаковым именем объединяются (суммируются их CPU и RAM).
+    Processes with the same name are aggregated (their CPU and RAM are summed).
     """
 
-    now = time.time()
-    aggregated: dict[str, dict[str, float | int]] = {}
-
+    snapshots: list[tuple[psutil.Process, float, float, str]] = []
     for p in psutil.process_iter(["pid", "name"]):
         try:
             name_raw = p.info.get("name") or str(p.pid)
             if name_raw.lower() == "system idle process":
                 continue
-
             cpu_time = sum(p.cpu_times()[:2])
-            prev = PROC_CACHE.get(p.pid)
-            cpu = 0.0
-            if prev:
-                dt = now - prev[1]
-                if dt > 0:
-                    cpu = (cpu_time - prev[0]) / dt * 100
-            PROC_CACHE[p.pid] = (cpu_time, now)
-
             mem = p.memory_info().rss
-            cpu /= CPU_CORES
+            snapshots.append((p, cpu_time, mem, name_raw))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
 
+    if not snapshots:
+        return []
+
+    time.sleep(interval)
+
+    aggregated: dict[str, dict[str, float | int]] = {}
+    for p, cpu_start, mem, name_raw in snapshots:
+        try:
+            cpu_end = sum(p.cpu_times()[:2])
+            cpu = (cpu_end - cpu_start) / interval * 100 / CPU_CORES
             key = name_raw.lower()
             agg = aggregated.setdefault(key, {"name": name_raw, "cpu": 0.0, "ram": 0, "count": 0})
             agg["cpu"] += cpu
