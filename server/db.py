@@ -42,11 +42,16 @@ class MySQL:
         self._init_schema()
         self._maybe_migrate()
 
+    def cursor(self):
+        """Return a cursor ensuring the connection is alive."""
+        self.conn.ping(reconnect=True)
+        return self.conn.cursor()
+
     def execute(self, query: str, params: tuple | None = None):
         """Execute a query and return a lightweight result object."""
         query = query.replace("?", "%s")
         with self.lock:
-            cur = self.conn.cursor()
+            cur = self.cursor()
             cur.execute(query, params or ())
             rows = cur.fetchall() if cur.description else []
             cur.close()
@@ -60,7 +65,7 @@ class MySQL:
         return _Res(rows)
 
     def _init_schema(self) -> None:
-        with self.conn.cursor() as cur:
+        with self.cursor() as cur:
             cur.execute(
                 """CREATE TABLE IF NOT EXISTS metrics(
                        secret      VARCHAR(255),
@@ -103,7 +108,7 @@ class MySQL:
         if DB_FILE.exists():
             try:
                 data = json.loads(DB_FILE.read_text())
-                with self.conn.cursor() as cur:
+                with self.cursor() as cur:
                     cur.execute("UPDATE state SET data=%s WHERE id=1", (json.dumps(data),))
                 DB_FILE.rename(DB_FILE.with_suffix(".bak"))
                 migrated = True
@@ -115,7 +120,7 @@ class MySQL:
                 rows = sq.execute("SELECT * FROM metrics").fetchall()
                 cols = [d[1] for d in sq.execute("PRAGMA table_info(metrics)").fetchall()]
                 placeholders = ",".join(["%s"] * len(cols))
-                with self.conn.cursor() as cur:
+                with self.cursor() as cur:
                     cur.executemany(
                         f"INSERT INTO metrics({','.join(cols)}) VALUES({placeholders})",
                         [tuple(r) for r in rows],
@@ -134,12 +139,12 @@ sql = MySQL()
 
 def purge_old_metrics(days: int = 30) -> None:
     cutoff = int(time.time()) - days * 86400
-    with sql.lock, sql.conn.cursor() as cur:
+    with sql.lock, sql.cursor() as cur:
         cur.execute("DELETE FROM metrics WHERE ts < %s", (cutoff,))
 
 
 def record_metric(secret: str, data: Dict[str, Any]) -> None:
-    with sql.lock, sql.conn.cursor() as cur:
+    with sql.lock, sql.cursor() as cur:
         cur.execute(
             """INSERT INTO metrics(
                    secret, ts, cpu, ram, gpu, vram,
@@ -189,7 +194,7 @@ def _avg_chunk(chunk: List[tuple]) -> tuple[int, float | None, float | None, flo
 
 
 def fetch_metrics(secret: str, since: int) -> List[tuple[int, float]]:
-    with sql.lock, sql.conn.cursor() as cur:
+    with sql.lock, sql.cursor() as cur:
         cur.execute(
             "SELECT ts, cpu, ram, gpu, vram, net_up, net_down FROM metrics WHERE secret=%s AND ts>=%s ORDER BY ts ASC",
             (secret, since),
@@ -228,7 +233,7 @@ def _avg_chunk_full(chunk: List[tuple], avg_fn) -> Dict[str, Any]:
 
 
 def fetch_metrics_full(secret: str, since: int) -> List[Dict[str, Any]]:
-    with sql.lock, sql.conn.cursor() as cur:
+    with sql.lock, sql.cursor() as cur:
         cur.execute(
             "SELECT ts, cpu, ram, gpu, vram, net_up, net_down, ram_used, ram_total, vram_used, vram_total FROM metrics WHERE secret=%s AND ts>=%s ORDER BY ts ASC",
             (secret, since),
@@ -254,7 +259,7 @@ def fetch_metrics_full(secret: str, since: int) -> List[Dict[str, Any]]:
 
 
 def load_db() -> Dict[str, Any]:
-    with sql.lock, sql.conn.cursor() as cur:
+    with sql.lock, sql.cursor() as cur:
         cur.execute("SELECT data FROM state WHERE id=1")
         row = cur.fetchone()
     data = json.loads(row[0] if row and row[0] else "{}")
@@ -266,6 +271,6 @@ def load_db() -> Dict[str, Any]:
 
 
 def save_db(db: Dict[str, Any]) -> None:
-    with sql.lock, sql.conn.cursor() as cur:
+    with sql.lock, sql.cursor() as cur:
         cur.execute("UPDATE state SET data=%s WHERE id=1", (json.dumps(db),))
 
