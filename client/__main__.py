@@ -33,8 +33,6 @@ from client.worker import run_speedtest, run_diagnostics, submit, shutdown_execu
 
 atexit.register(shutdown_executor)
 atexit.register(lambda: TRAY_ICON and TRAY_ICON.stop())
-# Кэш для вычисления CPU без задержки
-PROC_CACHE: dict[int, tuple[float, float]] = {}
 GPU_VENDOR: str | None = None
 GPU_METRIC_FUNCS: list = []
 NVML_INITED = False
@@ -267,34 +265,33 @@ def gather_disks_metrics() -> List[dict]:
     return res
 
 
-def gather_top_processes(count: int = 5) -> List[dict]:
-    """Вернуть топ процессов по загрузке CPU с учётом RAM.
+def gather_top_processes(count: int = 5, delay: float = 0.1) -> List[dict]:
+    """Return top processes by CPU usage including RAM.
 
-    Процессы с одинаковым именем объединяются (суммируются их CPU и RAM).
+    Processes with the same name are aggregated (CPU and RAM summed).
+    CPU usage is measured over ``delay`` seconds on demand to avoid
+    persistent background sampling.
     """
 
-    now = time.time()
-    aggregated: dict[str, dict[str, float | int]] = {}
-    seen_pids: set[int] = set()
-
+    procs: List[psutil.Process] = []
     for p in psutil.process_iter(["pid", "name"]):
+        try:
+            p.cpu_percent(None)  # prime internal measurement
+            procs.append(p)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    time.sleep(delay)
+
+    aggregated: dict[str, dict[str, float | int]] = {}
+    for p in procs:
         try:
             name_raw = p.info.get("name") or str(p.pid)
             if name_raw.lower() == "system idle process":
                 continue
 
-            cpu_time = sum(p.cpu_times()[:2])
-            prev = PROC_CACHE.get(p.pid)
-            cpu = 0.0
-            if prev:
-                dt = now - prev[1]
-                if dt > 0:
-                    cpu = (cpu_time - prev[0]) / dt * 100
-            PROC_CACHE[p.pid] = (cpu_time, now)
-            seen_pids.add(p.pid)
-
+            cpu = p.cpu_percent(None) / CPU_CORES
             mem = p.memory_info().rss
-            cpu /= CPU_CORES
 
             key = name_raw.lower()
             agg = aggregated.setdefault(key, {"name": name_raw, "cpu": 0.0, "ram": 0, "count": 0})
@@ -303,10 +300,6 @@ def gather_top_processes(count: int = 5) -> List[dict]:
             agg["count"] += 1
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-
-    for pid in list(PROC_CACHE):
-        if pid not in seen_pids:
-            PROC_CACHE.pop(pid, None)
 
     res = []
     for data in aggregated.values():
@@ -849,7 +842,6 @@ def do_shutdown():
 async def _send_metrics_loop(ws: websockets.WebSocketClientProtocol) -> None:
     """Периодическая отправка метрик."""
     psutil.cpu_percent(interval=None)
-    gather_top_processes()  # prime process cache
     init_gpu_metrics()
     while True:
         try:
@@ -859,8 +851,6 @@ async def _send_metrics_loop(ws: websockets.WebSocketClientProtocol) -> None:
             log.error("WS send error: %s", exc)
             break
         await asyncio.sleep(INTERVAL)
-        # update CPU usage cache for accurate top processes
-        gather_top_processes()
 
 
 async def _recv_loop(ws: websockets.WebSocketClientProtocol) -> None:
