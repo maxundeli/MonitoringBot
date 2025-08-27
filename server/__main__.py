@@ -1163,6 +1163,7 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup(
             [
                 [
+                    InlineKeyboardButton("20 ms", callback_data=f"stab_i:{secret}:20"),
                     InlineKeyboardButton("50 ms", callback_data=f"stab_i:{secret}:50"),
                     InlineKeyboardButton("100 ms", callback_data=f"stab_i:{secret}:100"),
                     InlineKeyboardButton("200 ms", callback_data=f"stab_i:{secret}:200"),

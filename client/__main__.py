@@ -769,7 +769,7 @@ def _stability_job(interval_ms: int, duration_s: int) -> None:
             duration_s,
         )
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(1.0)
+        sock.setblocking(False)
         sock.connect(addr)
         local_ip, local_port = sock.getsockname()
         log.info(
@@ -783,20 +783,56 @@ def _stability_job(interval_ms: int, duration_s: int) -> None:
         start_ts = time.time()
         rtts: list[float | None] = []
         pkt_idx = 0
+        next_send = start_ts
+        # основное окно отправки
         while time.time() < deadline:
-            ts = time.time()
-            payload = str(ts).encode()
+            now = time.time()
+            if now >= next_send:
+                ts = now
+                payload = f"{pkt_idx}:{ts}".encode()
+                try:
+                    sock.send(payload)
+                    rtts.append(None)
+                    log.debug("stability packet %s sent", pkt_idx)
+                except Exception as exc:
+                    rtts.append(None)
+                    log.warning("stability packet %s send failed: %s", pkt_idx, exc)
+                pkt_idx += 1
+                next_send += interval_ms / 1000
+
             try:
-                sock.send(payload)
-                sock.recv(1024)
-                rtt = (time.time() - ts) * 1000
-                rtts.append(rtt)
-                log.debug("stability packet %s rtt %.2fms", pkt_idx, rtt)
+                data = sock.recv(1024)
+                recv_time = time.time()
+                idx_str, ts_str = data.decode().split(":", 1)
+                idx = int(idx_str)
+                rtt = (recv_time - float(ts_str)) * 1000
+                if idx < len(rtts) and rtts[idx] is None:
+                    rtts[idx] = rtt
+                    log.debug("stability packet %s rtt %.2fms", idx, rtt)
+            except BlockingIOError:
+                pass
             except Exception as exc:
-                rtts.append(None)
-                log.warning("stability packet %s failed: %s", pkt_idx, exc)
-            pkt_idx += 1
-            time.sleep(interval_ms / 1000)
+                log.debug("stability recv failed: %s", exc)
+
+            time.sleep(0.001)
+
+        # добираем поздние ответы ещё секунду
+        end_wait = time.time() + 1.0
+        while time.time() < end_wait:
+            try:
+                data = sock.recv(1024)
+                recv_time = time.time()
+                idx_str, ts_str = data.decode().split(":", 1)
+                idx = int(idx_str)
+                rtt = (recv_time - float(ts_str)) * 1000
+                if idx < len(rtts) and rtts[idx] is None:
+                    rtts[idx] = rtt
+                    log.debug("stability packet %s late rtt %.2fms", idx, rtt)
+            except BlockingIOError:
+                time.sleep(0.001)
+            except Exception:
+                break
+
         sock.close()
         ws_send(
             {
