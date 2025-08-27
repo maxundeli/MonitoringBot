@@ -761,23 +761,52 @@ def _stability_job(interval_ms: int, duration_s: int) -> None:
     global stability_running
     try:
         addr = (SERVER_IP, UDP_PORT)
+        log.info(
+            "stability test to %s:%s interval=%sms duration=%ss",
+            SERVER_IP,
+            UDP_PORT,
+            interval_ms,
+            duration_s,
+        )
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(1.0)
+        sock.connect(addr)
+        local_ip, local_port = sock.getsockname()
+        log.info(
+            "stability UDP socket %s:%s -> %s:%s",
+            local_ip,
+            local_port,
+            SERVER_IP,
+            UDP_PORT,
+        )
         deadline = time.time() + duration_s
         start_ts = time.time()
         rtts: list[float | None] = []
+        pkt_idx = 0
         while time.time() < deadline:
             ts = time.time()
             payload = str(ts).encode()
             try:
-                sock.sendto(payload, addr)
-                sock.recvfrom(1024)
-                rtts.append((time.time() - ts) * 1000)
-            except Exception:
+                sock.send(payload)
+                sock.recv(1024)
+                rtt = (time.time() - ts) * 1000
+                rtts.append(rtt)
+                log.debug("stability packet %s rtt %.2fms", pkt_idx, rtt)
+            except Exception as exc:
                 rtts.append(None)
+                log.warning("stability packet %s failed: %s", pkt_idx, exc)
+            pkt_idx += 1
             time.sleep(interval_ms / 1000)
         sock.close()
-        ws_send({"stability": {"start_ts": start_ts, "interval_ms": interval_ms, "rtts": rtts}})
+        ws_send(
+            {
+                "stability": {
+                    "start_ts": start_ts,
+                    "interval_ms": interval_ms,
+                    "rtts": rtts,
+                }
+            }
+        )
     except Exception as exc:
         log.error("stability job error: %s", exc)
         ws_send({"stability": {"error": str(exc)}})
