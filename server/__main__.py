@@ -394,12 +394,22 @@ async def check_stability_done(ctx: ContextTypes.DEFAULT_TYPE):
     ]
     ys = [r if r is not None else float("nan") for r in rtts]
     import matplotlib.pyplot as plt
+    plt.style.use("dark_background")
     fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(times, ys, linewidth=0.5)
+    ax.plot(times, ys, linewidth=1.2)
     for s, e in outages:
-        ax.axvspan(s, e, color="red", alpha=0.3)
+        ax.axvspan(
+            s,
+            e,
+            facecolor="red",
+            alpha=0.3,
+            hatch="//",
+            edgecolor="red",
+            linewidth=0,
+        )
     ax.set_ylabel("Пинг, мс")
     ax.set_xlabel("Время")
+    ax.grid(True, linestyle="--", linewidth=0.3)
     fig.autofmt_xdate()
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight")
@@ -1193,6 +1203,10 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         if secret in STAB_JOBS:
             await q.answer("🚧 Тест уже выполняется.", show_alert=True)
+            await ctx.bot.send_message(
+                chat_id=q.message.chat_id,
+                text="⚠️ Тест уже выполняется, дождитесь завершения.",
+            )
             return
         await send_or_queue(secret, f"stability {interval} {duration}")
         await q.answer()
