@@ -45,6 +45,7 @@ from telegram.ext import (
 
 from .db import sql, load_db, save_db, record_metric, purge_old_metrics
 from .graphs import (
+    _plot_segments,
     parse_timespan,
     plot_custom,
     plot_metric,
@@ -386,25 +387,40 @@ async def check_stability_done(ctx: ContextTypes.DEFAULT_TYPE):
     await ctx.bot.edit_message_text(
         chat_id=chat_id,
         message_id=msg_id,
-        text=report,
+        text="📶 Тест завершён.",
     )
+    await ctx.bot.send_message(chat_id=chat_id, text=report)
 
     times = [
         datetime.fromtimestamp(start_ts + i * interval_ms / 1000) for i in range(sent)
     ]
-    ys = [r if r is not None else float("nan") for r in rtts]
+
+    segments: list[tuple[int, int]] = []
+    seg_start: int | None = None
+    for i, r in enumerate(rtts):
+        if r is not None:
+            if seg_start is None:
+                seg_start = i
+        else:
+            if seg_start is not None:
+                segments.append((seg_start, i - 1))
+                seg_start = None
+    if seg_start is not None:
+        segments.append((seg_start, sent - 1))
+
+    ys = [float("nan") if r is None else r for r in rtts]
     import matplotlib.pyplot as plt
     plt.style.use("dark_background")
     fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(times, ys, linewidth=1.2)
+    _plot_segments(ax, times, ys, segments, linewidth=1.2)
     for s, e in outages:
         ax.axvspan(
             s,
             e,
-            facecolor="red",
-            alpha=0.3,
+            facecolor="none",
             hatch="//",
             edgecolor="red",
+            alpha=0.3,
             linewidth=0,
         )
     ax.set_ylabel("Пинг, мс")
