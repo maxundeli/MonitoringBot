@@ -130,32 +130,20 @@ class UDPEchoProtocol(asyncio.DatagramProtocol):
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self.transport = transport  # type: ignore[assignment]
-        log.debug("UDP echo server ready on %s", UDP_TEST_PORT)
 
     def datagram_received(self, data: bytes, addr) -> None:  # type: ignore[override]
-        log.debug("UDP echo recv %d bytes from %s", len(data), addr)
         if self.transport:
-            try:
-                self.transport.sendto(data, addr)
-            except Exception as exc:  # pragma: no cover - log for diagnostics
-                log.warning("UDP echo send failed to %s: %s", addr, exc)
+            self.transport.sendto(data, addr)
 
 
 def start_udp_echo() -> None:
     async def _run() -> None:
-        loop = asyncio.get_running_loop()
-        try:
-            await loop.create_datagram_endpoint(
-                UDPEchoProtocol, local_addr=("0.0.0.0", UDP_TEST_PORT)
-            )
-            await asyncio.Future()
-        except Exception:  # pragma: no cover - startup diagnostics
-            log.exception("UDP echo server failed")
+        await asyncio.get_running_loop().create_datagram_endpoint(
+            UDPEchoProtocol, local_addr=("0.0.0.0", UDP_TEST_PORT)
+        )
+        await asyncio.Future()
 
-    try:
-        asyncio.run(_run())
-    except Exception:  # pragma: no cover - thread diagnostics
-        log.exception("UDP echo thread crashed")
+    asyncio.run(_run())
 
 _load_dotenv()
 _ensure_ssl()
