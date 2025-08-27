@@ -1141,10 +1141,32 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("1 ч", callback_data=f"stab_run:{secret}:{interval}:3600"),
-                    InlineKeyboardButton("6 ч", callback_data=f"stab_run:{secret}:{interval}:21600"),
-                    InlineKeyboardButton("12 ч", callback_data=f"stab_run:{secret}:{interval}:43200"),
-                    InlineKeyboardButton("1 д", callback_data=f"stab_run:{secret}:{interval}:86400"),
+                    InlineKeyboardButton(
+                        "5 мин",
+                        callback_data=f"stab_run:{secret}:{interval}:300",
+                    ),
+                    InlineKeyboardButton(
+                        "15 мин",
+                        callback_data=f"stab_run:{secret}:{interval}:900",
+                    ),
+                    InlineKeyboardButton(
+                        "1 ч",
+                        callback_data=f"stab_run:{secret}:{interval}:3600",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "6 ч",
+                        callback_data=f"stab_run:{secret}:{interval}:21600",
+                    ),
+                    InlineKeyboardButton(
+                        "12 ч",
+                        callback_data=f"stab_run:{secret}:{interval}:43200",
+                    ),
+                    InlineKeyboardButton(
+                        "1 д",
+                        callback_data=f"stab_run:{secret}:{interval}:86400",
+                    ),
                 ],
                 [InlineKeyboardButton("◀️ Назад", callback_data=f"stability:{secret}")],
             ]
@@ -1166,9 +1188,16 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         await send_or_queue(secret, f"stability {interval} {duration}")
         await q.answer()
+        dur_text = (
+            f"{duration // 86400} д"
+            if duration >= 86400
+            else f"{duration // 3600} ч"
+            if duration >= 3600
+            else f"{duration // 60} мин"
+        )
         msg = await ctx.bot.send_message(
             chat_id=q.message.chat_id,
-            text=f"⏳ Проверяем стабильность: {interval} мс, {duration // 3600} ч…",
+            text=f"⏳ Проверяем стабильность: {interval} мс, {dur_text}…",
         )
         ctx.job_queue.run_repeating(
             callback=check_stability_done,
