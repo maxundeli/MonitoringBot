@@ -1177,10 +1177,12 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("20 ms", callback_data=f"stab_i:{secret}:20"),
                     InlineKeyboardButton("50 ms", callback_data=f"stab_i:{secret}:50"),
                     InlineKeyboardButton("100 ms", callback_data=f"stab_i:{secret}:100"),
+
+                ],
+                [
                     InlineKeyboardButton("200 ms", callback_data=f"stab_i:{secret}:200"),
                     InlineKeyboardButton("500 ms", callback_data=f"stab_i:{secret}:500"),
-                    InlineKeyboardButton("1000 ms", callback_data=f"stab_i:{secret}:1000"),
-                ],
+                    InlineKeyboardButton("1000 ms", callback_data=f"stab_i:{secret}:1000"),],
                 [InlineKeyboardButton("◀️ Назад", callback_data=f"status:{secret}")],
             ]
         )
