@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import multiprocessing as mp
+import gc
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -46,6 +47,8 @@ from telegram.ext import (
 from .db import sql, load_db, save_db, record_metric, purge_old_metrics
 from .graphs import (
     _plot_segments,
+    _apply_time_locator,
+    _make_figure,
     parse_timespan,
     plot_custom,
     plot_metric,
@@ -366,6 +369,7 @@ async def check_stability_done(ctx: ContextTypes.DEFAULT_TYPE):
     interval_ms = result.get("interval_ms", 0)
     start_ts = result.get("start_ts", time.time())
     sent = len(rtts)
+    total_seconds = int(sent * interval_ms / 1000)
     lost = sum(1 for r in rtts if r is None)
     loss_pct = (lost / sent * 100) if sent else 0
     pings = [r for r in rtts if r is not None]
@@ -381,14 +385,18 @@ async def check_stability_done(ctx: ContextTypes.DEFAULT_TYPE):
                 cur = idx
         else:
             if cur is not None:
-                s = datetime.fromtimestamp(start_ts + cur * interval_ms / 1000)
-                e = datetime.fromtimestamp(start_ts + idx * interval_ms / 1000)
-                outages.append((s, e))
+                duration = (idx - cur) * interval_ms / 1000
+                if duration >= 3:
+                    s = datetime.fromtimestamp(start_ts + cur * interval_ms / 1000)
+                    e = datetime.fromtimestamp(start_ts + idx * interval_ms / 1000)
+                    outages.append((s, e))
                 cur = None
     if cur is not None:
-        s = datetime.fromtimestamp(start_ts + cur * interval_ms / 1000)
-        e = datetime.fromtimestamp(start_ts + sent * interval_ms / 1000)
-        outages.append((s, e))
+        duration = (sent - cur) * interval_ms / 1000
+        if duration >= 3:
+            s = datetime.fromtimestamp(start_ts + cur * interval_ms / 1000)
+            e = datetime.fromtimestamp(start_ts + sent * interval_ms / 1000)
+            outages.append((s, e))
 
     lines = [
         f"📶 Потерь пакетов: {lost}/{sent} ({loss_pct:.1f}%)",
@@ -428,7 +436,7 @@ async def check_stability_done(ctx: ContextTypes.DEFAULT_TYPE):
     ys = [float("nan") if r is None else r for r in rtts]
     import matplotlib.pyplot as plt
     plt.style.use("dark_background")
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, ax = _make_figure(total_seconds)
     _plot_segments(ax, times, ys, segments, linewidth=1.2)
     for s, e in outages:
         ax.axvspan(
@@ -443,11 +451,14 @@ async def check_stability_done(ctx: ContextTypes.DEFAULT_TYPE):
     ax.set_ylabel("Пинг, мс")
     ax.set_xlabel("Время")
     ax.grid(True, linestyle="--", linewidth=0.3)
+    _apply_time_locator(ax, total_seconds)
     fig.autofmt_xdate()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.tight_layout()
+    fig.savefig(buf, dpi=fig.dpi, format="png")
     buf.seek(0)
     plt.close(fig)
+    gc.collect()
 
     await ctx.bot.send_photo(
         chat_id=chat_id,
