@@ -40,6 +40,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    Job,
 )
 
 from .db import sql, load_db, save_db, record_metric, purge_old_metrics
@@ -65,6 +66,7 @@ LATEST_DIAG: Dict[str, Optional[str]] = {}
 LATEST_STATUS: Dict[str, Dict[str, Any]] = {}
 # результаты тестов стабильности связи
 LATEST_STAB: Dict[str, Dict[str, Any]] = {}
+STAB_JOBS: Dict[str, Job] = {}
 _MISSING = object()
 
 # активные WebSocket-соединения с агентами
@@ -326,6 +328,7 @@ async def check_stability_done(ctx: ContextTypes.DEFAULT_TYPE):
             message_id=msg_id,
             text="⚠️ Тест стабильности не завершился.",
         )
+        STAB_JOBS.pop(secret, None)
         job.schedule_removal()
         return
 
@@ -337,6 +340,7 @@ async def check_stability_done(ctx: ContextTypes.DEFAULT_TYPE):
             message_id=msg_id,
             text="⚠️ Тест стабильности не удался.",
         )
+        STAB_JOBS.pop(secret, None)
         job.schedule_removal()
         return
 
@@ -407,6 +411,7 @@ async def check_stability_done(ctx: ContextTypes.DEFAULT_TYPE):
         photo=InputFile(buf, filename="stability.png"),
     )
 
+    STAB_JOBS.pop(secret, None)
     job.schedule_removal()
 
 async def check_status_done(ctx: ContextTypes.DEFAULT_TYPE):
@@ -1186,6 +1191,9 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not entry or not is_owner(entry, q.from_user.id):
             await q.answer("🚫 Нет доступа.", show_alert=True)
             return
+        if secret in STAB_JOBS:
+            await q.answer("🚧 Тест уже выполняется.", show_alert=True)
+            return
         await send_or_queue(secret, f"stability {interval} {duration}")
         await q.answer()
         dur_text = (
@@ -1199,7 +1207,7 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             chat_id=q.message.chat_id,
             text=f"⏳ Проверяем стабильность: {interval} мс, {dur_text}…",
         )
-        ctx.job_queue.run_repeating(
+        job = ctx.job_queue.run_repeating(
             callback=check_stability_done,
             interval=30,
             data={
@@ -1209,6 +1217,7 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "deadline": time.time() + duration + 60,
             },
         )
+        STAB_JOBS[secret] = job
         return
 
 
