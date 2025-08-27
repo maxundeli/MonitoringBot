@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import List, Optional
 import shutil
 import subprocess
+import socket
 
 import psutil
 from PIL import Image
@@ -161,6 +162,7 @@ if not SERVER_IP:
     ENV_FILE.write_text((ENV_FILE.read_text() if ENV_FILE.exists() else "") + f"AGENT_SERVER_IP={SERVER_IP}\n")
 
 PORT = int(os.getenv("AGENT_PORT", "8000"))
+UDP_PORT = int(os.getenv("AGENT_UDP_PORT", "9999"))
 
 VERIFY_ENV = os.getenv("AGENT_VERIFY_SSL", "1").lower()
 if VERIFY_ENV == "0":
@@ -703,6 +705,7 @@ def gather_metrics(full: bool = False) -> dict:
 # ---------- async speedtest helper ----------
 speedtest_running = False      # флаг «тест уже идёт»
 diag_running = False
+stability_running = False
 
 def _speedtest_job():
     global speedtest_running
@@ -751,6 +754,35 @@ def _diag_job():
         log.error("diagnostics job error: %s", exc)
     finally:
         diag_running = False
+
+
+def _stability_job(interval_ms: int, duration_s: int) -> None:
+    """Проверка стабильности соединения UDP-эхо."""
+    global stability_running
+    try:
+        addr = (SERVER_IP, UDP_PORT)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(1.0)
+        deadline = time.time() + duration_s
+        start_ts = time.time()
+        rtts: list[float | None] = []
+        while time.time() < deadline:
+            ts = time.time()
+            payload = str(ts).encode()
+            try:
+                sock.sendto(payload, addr)
+                sock.recvfrom(1024)
+                rtts.append((time.time() - ts) * 1000)
+            except Exception:
+                rtts.append(None)
+            time.sleep(interval_ms / 1000)
+        sock.close()
+        ws_send({"stability": {"start_ts": start_ts, "interval_ms": interval_ms, "rtts": rtts}})
+    except Exception as exc:
+        log.error("stability job error: %s", exc)
+        ws_send({"stability": {"error": str(exc)}})
+    finally:
+        stability_running = False
 # ────── network layer: TLS TOFU + fingerprint pinning ────────────
 import ssl, socket, json, hashlib, pathlib, logging
 from urllib.parse import urlparse
@@ -857,6 +889,7 @@ async def _send_metrics_loop(ws: websockets.WebSocketClientProtocol) -> None:
 
 async def _recv_loop(ws: websockets.WebSocketClientProtocol) -> None:
     """Получение команд от сервера."""
+    global stability_running
     while True:
         try:
             resp = json.loads(await ws.recv())
@@ -880,6 +913,24 @@ async def _recv_loop(ws: websockets.WebSocketClientProtocol) -> None:
                     threading.Thread(target=_diag_job, daemon=True).start()
                 else:
                     push_text("🚧 Диагностика уже выполняется, дождитесь окончания.")
+            elif c.startswith("stability"):
+                if not stability_running:
+                    try:
+                        _, ms, dur = c.split()
+                        ms_i = int(ms)
+                        dur_i = int(dur)
+                    except Exception:
+                        push_text("⚠️ Неверные параметры теста.")
+                        continue
+                    log.info("cmd stability %sms %ss", ms_i, dur_i)
+                    stability_running = True
+                    threading.Thread(
+                        target=_stability_job,
+                        args=(ms_i, dur_i),
+                        daemon=True,
+                    ).start()
+                else:
+                    push_text("🚧 Тест стабильности уже выполняется, дождитесь окончания.")
             elif c == "status":
                 await ws.send(json.dumps({**gather_metrics(full=True), "oneshot": True}))
 

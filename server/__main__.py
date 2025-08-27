@@ -54,6 +54,8 @@ from .graphs import (
 # ────────────────────────── CONFIG ─────────────────────────────────────────
 ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 API_PORT = int(os.getenv("PORT", "8000"))
+# порт UDP-эхо сервера для проверки стабильности связи
+UDP_TEST_PORT = int(os.getenv("UDP_TEST_PORT", "9999"))
 
 # последний текстовый статус от клиентов (speedtest и пр.)
 LATEST_TEXT: Dict[str, str] = {}
@@ -61,6 +63,8 @@ LATEST_TEXT: Dict[str, str] = {}
 LATEST_DIAG: Dict[str, Optional[str]] = {}
 # временные метрики, отправляемые командой /status
 LATEST_STATUS: Dict[str, Dict[str, Any]] = {}
+# результаты тестов стабильности связи
+LATEST_STAB: Dict[str, Dict[str, Any]] = {}
 _MISSING = object()
 
 # активные WebSocket-соединения с агентами
@@ -114,6 +118,29 @@ def _ensure_ssl() -> None:
         logging.info("✅ Certificate created.")
     except Exception as exc:
         logging.warning("⚠️  TLS cert generation failed: %s", exc)
+
+class UDPEchoProtocol(asyncio.DatagramProtocol):
+    """Простой UDP-эхо сервер для проверки связи."""
+
+    def __init__(self):
+        self.transport: asyncio.DatagramTransport | None = None
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        self.transport = transport  # type: ignore[assignment]
+
+    def datagram_received(self, data: bytes, addr) -> None:  # type: ignore[override]
+        if self.transport:
+            self.transport.sendto(data, addr)
+
+
+def start_udp_echo() -> None:
+    async def _run() -> None:
+        await asyncio.get_running_loop().create_datagram_endpoint(
+            UDPEchoProtocol, local_addr=("0.0.0.0", UDP_TEST_PORT)
+        )
+        await asyncio.Future()
+
+    asyncio.run(_run())
 
 _load_dotenv()
 _ensure_ssl()
@@ -280,6 +307,107 @@ async def check_diag_done(ctx: ContextTypes.DEFAULT_TYPE):
     LATEST_DIAG.pop(secret, None)
     job.schedule_removal()
 
+
+async def check_stability_done(ctx: ContextTypes.DEFAULT_TYPE):
+    job = ctx.job
+    data = job.data
+
+    secret = data["secret"]
+    chat_id = data["chat_id"]
+    msg_id = data["msg_id"]
+    deadline = data["deadline"]
+
+    result = LATEST_STAB.get(secret)
+    if not result:
+        if time.time() < deadline:
+            return
+        await ctx.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=msg_id,
+            text="⚠️ Тест стабильности не завершился.",
+        )
+        job.schedule_removal()
+        return
+
+    LATEST_STAB.pop(secret, None)
+
+    if result.get("error"):
+        await ctx.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=msg_id,
+            text="⚠️ Тест стабильности не удался.",
+        )
+        job.schedule_removal()
+        return
+
+    rtts = result.get("rtts") or []
+    interval_ms = result.get("interval_ms", 0)
+    start_ts = result.get("start_ts", time.time())
+    sent = len(rtts)
+    lost = sum(1 for r in rtts if r is None)
+    loss_pct = (lost / sent * 100) if sent else 0
+    pings = [r for r in rtts if r is not None]
+    avg = sum(pings) / len(pings) if pings else 0
+    diffs = [abs(pings[i] - pings[i - 1]) for i in range(1, len(pings))]
+    jitter = sum(diffs) / len(diffs) if diffs else 0
+
+    outages: List[tuple[datetime, datetime]] = []
+    cur = None
+    for idx, r in enumerate(rtts):
+        if r is None:
+            if cur is None:
+                cur = idx
+        else:
+            if cur is not None:
+                s = datetime.fromtimestamp(start_ts + cur * interval_ms / 1000)
+                e = datetime.fromtimestamp(start_ts + idx * interval_ms / 1000)
+                outages.append((s, e))
+                cur = None
+    if cur is not None:
+        s = datetime.fromtimestamp(start_ts + cur * interval_ms / 1000)
+        e = datetime.fromtimestamp(start_ts + sent * interval_ms / 1000)
+        outages.append((s, e))
+
+    lines = [
+        f"📶 Потерь пакетов: {lost}/{sent} ({loss_pct:.1f}%)",
+        f"Средний пинг: {avg:.1f} мс",
+        f"Джиттер: {jitter:.1f} мс",
+    ]
+    if outages:
+        lines.append("Разрывы:")
+        for s, e in outages:
+            lines.append(f"• {s:%H:%M:%S} – {e:%H:%M:%S}")
+    report = "📶 Отчёт по стабильности\n" + "\n".join(lines)
+
+    await ctx.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=msg_id,
+        text=report,
+    )
+
+    times = [
+        datetime.fromtimestamp(start_ts + i * interval_ms / 1000) for i in range(sent)
+    ]
+    ys = [r if r is not None else float("nan") for r in rtts]
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(times, ys, linewidth=0.5)
+    for s, e in outages:
+        ax.axvspan(s, e, color="red", alpha=0.3)
+    ax.set_ylabel("Пинг, мс")
+    ax.set_xlabel("Время")
+    fig.autofmt_xdate()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    buf.seek(0)
+    plt.close(fig)
+
+    await ctx.bot.send_photo(
+        chat_id=chat_id,
+        photo=InputFile(buf, filename="stability.png"),
+    )
+
+    job.schedule_removal()
 
 async def check_status_done(ctx: ContextTypes.DEFAULT_TYPE):
     job = ctx.job
@@ -482,6 +610,7 @@ def status_keyboard(secret: str) -> InlineKeyboardMarkup:
             ],
             [InlineKeyboardButton("🏎️ Speedtest", callback_data=f"speedtest:{secret}"),
              InlineKeyboardButton("📋 Диагностика", callback_data=f"diag:{secret}")],
+            [InlineKeyboardButton("📶 Стабильность", callback_data=f"stability:{secret}")],
             [
                 InlineKeyboardButton("🔄 Reboot",   callback_data=f"reboot:{secret}"),
                 InlineKeyboardButton("⏻ Shutdown", callback_data=f"shutdown:{secret}"),
@@ -977,6 +1106,83 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 
+    if action == "stability":
+        secret = parts[1]
+        entry = db["secrets"].get(secret)
+        if not entry or not is_owner(entry, q.from_user.id):
+            await q.answer("🚫 Нет доступа.", show_alert=True)
+            return
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("50 ms", callback_data=f"stab_i:{secret}:50"),
+                    InlineKeyboardButton("100 ms", callback_data=f"stab_i:{secret}:100"),
+                    InlineKeyboardButton("200 ms", callback_data=f"stab_i:{secret}:200"),
+                    InlineKeyboardButton("500 ms", callback_data=f"stab_i:{secret}:500"),
+                    InlineKeyboardButton("1000 ms", callback_data=f"stab_i:{secret}:1000"),
+                ],
+                [InlineKeyboardButton("◀️ Назад", callback_data=f"status:{secret}")],
+            ]
+        )
+        await ctx.bot.send_message(
+            chat_id=q.message.chat_id,
+            text="Интервал пакетов:",
+            reply_markup=kb,
+        )
+        return
+
+    if action == "stab_i":
+        secret = parts[1]
+        interval = int(parts[2])
+        entry = db["secrets"].get(secret)
+        if not entry or not is_owner(entry, q.from_user.id):
+            await q.answer("🚫 Нет доступа.", show_alert=True)
+            return
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("1 ч", callback_data=f"stab_run:{secret}:{interval}:3600"),
+                    InlineKeyboardButton("6 ч", callback_data=f"stab_run:{secret}:{interval}:21600"),
+                    InlineKeyboardButton("12 ч", callback_data=f"stab_run:{secret}:{interval}:43200"),
+                    InlineKeyboardButton("1 д", callback_data=f"stab_run:{secret}:{interval}:86400"),
+                ],
+                [InlineKeyboardButton("◀️ Назад", callback_data=f"stability:{secret}")],
+            ]
+        )
+        await ctx.bot.send_message(
+            chat_id=q.message.chat_id,
+            text="Длительность теста:",
+            reply_markup=kb,
+        )
+        return
+
+    if action == "stab_run":
+        secret = parts[1]
+        interval = int(parts[2])
+        duration = int(parts[3])
+        entry = db["secrets"].get(secret)
+        if not entry or not is_owner(entry, q.from_user.id):
+            await q.answer("🚫 Нет доступа.", show_alert=True)
+            return
+        await send_or_queue(secret, f"stability {interval} {duration}")
+        await q.answer()
+        msg = await ctx.bot.send_message(
+            chat_id=q.message.chat_id,
+            text=f"⏳ Проверяем стабильность: {interval} мс, {duration // 3600} ч…",
+        )
+        ctx.job_queue.run_repeating(
+            callback=check_stability_done,
+            interval=30,
+            data={
+                "secret": secret,
+                "chat_id": msg.chat_id,
+                "msg_id": msg.message_id,
+                "deadline": time.time() + duration + 60,
+            },
+        )
+        return
+
+
     if action == "speedtest":
         secret = parts[1]
         entry = db["secrets"].get(secret)
@@ -1084,6 +1290,13 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ────────────────────────── FastAPI for agents ─────────────────────────────
 app = FastAPI()
 
+class StabilityPayload(BaseModel):
+    start_ts: float | None = None
+    interval_ms: int | None = None
+    rtts: List[float | None] | None = None
+    error: str | None = None
+
+
 class PushPayload(BaseModel):
     cpu: float | None = None
     ram: float | None = None
@@ -1107,6 +1320,7 @@ class PushPayload(BaseModel):
     text: str | None = None
     diag: str | None = None
     diag_ok: bool | None = None
+    stability: StabilityPayload | None = None
 
 
 async def process_payload(secret: str, payload: PushPayload) -> None:
@@ -1120,6 +1334,10 @@ async def process_payload(secret: str, payload: PushPayload) -> None:
 
     if payload.diag_ok is not None:
         LATEST_DIAG[secret] = payload.diag if payload.diag_ok else None
+        return
+
+    if payload.stability is not None:
+        LATEST_STAB[secret] = payload.stability.model_dump()
         return
 
     if payload.cpu is None or payload.ram is None:
@@ -1176,7 +1394,9 @@ def start_uvicorn():
 
 def main():
     threading.Thread(target=start_uvicorn, daemon=True).start()
+    threading.Thread(target=start_udp_echo, daemon=True).start()
     log.info("🌐 FastAPI on port %s", API_PORT)
+    log.info("📡 UDP echo on port %s", UDP_TEST_PORT)
 
     global TG_APP
     async def post_init(app: Application) -> None:
