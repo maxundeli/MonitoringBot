@@ -1275,7 +1275,7 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "secret": secret,
                 "chat_id": msg.chat_id,
                 "msg_id": msg.message_id,
-                "deadline": time.time() + duration + 60,
+                "deadline": time.time() + duration + 300,  # allow reconnect
             },
         )
         STAB_JOBS[secret] = job
