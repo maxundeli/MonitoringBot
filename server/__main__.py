@@ -177,8 +177,9 @@ if "BOT_TOKEN" not in os.environ:
         (ENV_FILE.read_text() if ENV_FILE.exists() else "") + f"BOT_TOKEN={TOKEN}\n"
     )
 
+_lvl = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, _lvl, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("remote-bot")
@@ -341,7 +342,7 @@ async def check_stability_done(ctx: ContextTypes.DEFAULT_TYPE):
     deadline = data["deadline"]
 
     result = LATEST_STAB.get(secret)
-    if not result:
+    if not result or not result.get("done"):
         if time.time() < deadline:
             return
         await ctx.bot.edit_message_text(
@@ -1394,6 +1395,7 @@ class StabilityPayload(BaseModel):
     interval_ms: int | None = None
     rtts: List[float | None] | None = None
     error: str | None = None
+    done: bool | None = None
 
 
 class PushPayload(BaseModel):
@@ -1436,7 +1438,27 @@ async def process_payload(secret: str, payload: PushPayload) -> None:
         return
 
     if payload.stability is not None:
-        LATEST_STAB[secret] = payload.stability.model_dump()
+        data = payload.stability.model_dump()
+        entry = LATEST_STAB.setdefault(
+            secret,
+            {
+                "start_ts": data.get("start_ts"),
+                "interval_ms": data.get("interval_ms"),
+                "rtts": [],
+            },
+        )
+        if data.get("rtts"):
+            entry["rtts"].extend(data["rtts"])
+            logging.debug(
+                "stability chunk from %s: %s samples (total %s)",
+                secret,
+                len(data["rtts"]),
+                len(entry["rtts"]),
+            )
+        if data.get("error"):
+            entry["error"] = data["error"]
+        if data.get("done"):
+            entry["done"] = True
         return
 
     if payload.cpu is None or payload.ram is None:
