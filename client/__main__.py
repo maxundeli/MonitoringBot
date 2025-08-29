@@ -45,6 +45,8 @@ import websockets
 WS_LOOP: asyncio.AbstractEventLoop | None = None
 WS_CONN: websockets.WebSocketClientProtocol | None = None
 TRAY_ICON: object | None = None
+WS_PENDING: list[dict] = []
+WS_PENDING_LOCK = threading.Lock()
 try:
     import pynvml
 except Exception:
@@ -732,10 +734,13 @@ def ws_send(obj: dict) -> None:
         )
         try:
             fut.result()
+            return
         except Exception as e:
-            log.error("WS send error: %s", e)
+            log.error("WS send error: %s, queued", e)
     else:
-        log.error("WS connection not ready")
+        log.warning("WS connection not ready, queued")
+    with WS_PENDING_LOCK:
+        WS_PENDING.append(obj)
 
 def push_diag(txt: str, ok: bool = True):
     """Send diagnostics result to the server."""
@@ -1029,6 +1034,17 @@ async def ws_main() -> None:
                 log.info("Agent WS connected → %s", uri)
                 WS_LOOP = asyncio.get_running_loop()
                 WS_CONN = ws
+                with WS_PENDING_LOCK:
+                    pending = WS_PENDING.copy()
+                    WS_PENDING.clear()
+                for obj in pending:
+                    try:
+                        await ws.send(json.dumps(obj))
+                    except Exception as exc:
+                        log.error("WS queued send failed: %s", exc)
+                        with WS_PENDING_LOCK:
+                            WS_PENDING.append(obj)
+                        break
                 sender = asyncio.create_task(_send_metrics_loop(ws))
                 receiver = asyncio.create_task(_recv_loop(ws))
                 done, pending = await asyncio.wait(
