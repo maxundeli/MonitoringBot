@@ -99,7 +99,11 @@ else:
 
 
 log = logging.getLogger("pc-agent")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+_lvl = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, _lvl, logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
 
 ENV_FILE = Path(".env")
 
@@ -847,15 +851,24 @@ def _stability_job(interval_ms: int, duration_s: int) -> None:
                 log.debug("stability packet %s late rtt %.2fms", idx, rtt)
 
         sock.close()
-        ws_send(
-            {
-                "stability": {
-                    "start_ts": start_ts,
-                    "interval_ms": interval_ms,
-                    "rtts": rtts,
+        chunk = 10000
+        total = (len(rtts) + chunk - 1) // chunk
+        log.debug("stability collected %s samples, sending %s chunks", len(rtts), total)
+        for i in range(total):
+            part = rtts[i * chunk : (i + 1) * chunk]
+            log.debug(
+                "stability sending chunk %s/%s with %s samples", i + 1, total, len(part)
+            )
+            ws_send(
+                {
+                    "stability": {
+                        "start_ts": start_ts,
+                        "interval_ms": interval_ms,
+                        "rtts": part,
+                        "done": i + 1 == total,
+                    }
                 }
-            }
-        )
+            )
     except Exception as exc:
         log.error("stability job error: %s", exc)
         ws_send({"stability": {"error": str(exc)}})
