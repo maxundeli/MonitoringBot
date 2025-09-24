@@ -22,6 +22,7 @@ from typing import List, Optional
 import shutil
 import subprocess
 import socket
+import math
 
 import psutil
 from PIL import Image
@@ -106,6 +107,7 @@ logging.basicConfig(
 )
 
 ENV_FILE = Path(".env")
+GPU_METHOD_KEY = "AGENT_GPU_METHOD"
 
 # ────────────────────────── load .env → os.environ ─────────────────────────
 if ENV_FILE.exists():
@@ -113,6 +115,85 @@ if ENV_FILE.exists():
         if "=" in line and not line.lstrip().startswith("#"):
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
+
+
+def _update_env_file(key: str, value: str) -> None:
+    """Persist the given key/value pair to .env, replacing existing value."""
+
+    os.environ[key] = value
+    if ENV_FILE.exists():
+        lines = ENV_FILE.read_text().splitlines()
+    else:
+        lines = []
+
+    new_line = f"{key}={value}"
+    replaced = False
+    for idx, line in enumerate(lines):
+        if "=" not in line or line.lstrip().startswith("#"):
+            continue
+        if line.split("=", 1)[0].strip() == key:
+            lines[idx] = new_line
+            replaced = True
+            break
+    if not replaced:
+        lines.append(new_line)
+
+    if lines:
+        ENV_FILE.write_text("\n".join(lines) + "\n")
+    else:
+        ENV_FILE.write_text("")
+
+
+GPU_METHOD: str | None = os.getenv(GPU_METHOD_KEY)
+
+
+def _set_gpu_method(value: str) -> None:
+    """Store the detected GPU metrics collection method."""
+
+    global GPU_METHOD
+    if GPU_METHOD == value:
+        return
+    GPU_METHOD = value
+    _update_env_file(GPU_METHOD_KEY, value)
+
+
+def _as_valid_float(value) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(result):
+        return None
+    return result
+
+
+def _plausible_gpu_metrics(data: dict) -> bool:
+    """Heuristics to guard against bogus GPU telemetry results."""
+
+    total = _as_valid_float(data.get("vram_total"))
+    used = _as_valid_float(data.get("vram_used"))
+    util = _as_valid_float(data.get("gpu"))
+
+    if total is not None:
+        if total <= 0 or total < 128 or total > 262144:  # 128 MB .. 256 GB
+            return False
+        if used is not None and not (0 <= used <= total * 1.2):
+            return False
+    elif used is not None and used < 0:
+        return False
+
+    if util is not None and not (0 <= util <= 110):
+        return False
+
+    return True
+
+
+def _record_gpu_metrics(tag: str, data: dict) -> dict | None:
+    if _plausible_gpu_metrics(data):
+        _set_gpu_method(tag)
+        return data
+    log.warning("Discarding GPU metrics from %s due to implausible values: %s", tag, data)
+    return None
 
 # ────────────────────────── prompt helpers ─────────────────────────────────
 IP_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
@@ -347,66 +428,94 @@ def get_cpu_temp() -> str | None:
     return None
 def _nvidia_gpu_metrics() -> dict | None:
     """Try reading metrics using NVIDIA-specific tools."""
-    if pynvml and NVML_INITED:
-        try:
-            h = NVML_HANDLE or pynvml.nvmlDeviceGetHandleByIndex(0)
-            util = pynvml.nvmlDeviceGetUtilizationRates(h).gpu
-            mem = pynvml.nvmlDeviceGetMemoryInfo(h)
-            temp = pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU)
-            return {
-                "gpu": util,
-                "vram_used": mem.used / 2 ** 20,
-                "vram_total": mem.total / 2 ** 20,
-                "vram": mem.used / mem.total * 100 if mem.total else None,
-                "gpu_temp": float(temp),
-            }
-        except Exception:
-            pass
 
-    if shutil.which("nvidia-smi"):
-        try:
-            util, used, total, temp = map(
-                float,
-                re.split(
-                    r",\s*",
-                    subprocess.check_output(
-                        [
-                            "nvidia-smi",
-                            "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
-                            "--format=csv,noheader,nounits",
-                        ],
-                        text=True,
-                        timeout=2,
-                    ).strip(),
-                ),
-            )
-            return {
-                "gpu": util,
-                "vram_used": used,
-                "vram_total": total,
-                "vram": used / total * 100 if total else None,
-                "gpu_temp": temp,
-            }
-        except Exception:
-            pass
-
-    try:
-        import GPUtil
-
-        gpu = GPUtil.getGPUs()[0]
-        util = gpu.load * 100
-        used = gpu.memoryUsed
-        total = gpu.memoryTotal
-        temp = gpu.temperature
-        return {
-            "gpu": util,
-            "vram_used": used,
-            "vram_total": total,
-            "vram": used / total * 100 if total else None,
-            "gpu_temp": temp,
-        }
-    except Exception:
+    preferred = (GPU_METHOD or "").lower()
+    if preferred == "none":
         return None
+
+    order: list[str]
+    if preferred in {"nvidia:pynvml", "nvidia:cli", "nvidia:gputil"}:
+        order = [preferred.split(":", 1)[1]]
+    else:
+        order = ["pynvml", "cli", "gputil"]
+
+    for method in order:
+        if method == "pynvml":
+            if not (pynvml and NVML_INITED):
+                continue
+            try:
+                h = NVML_HANDLE or pynvml.nvmlDeviceGetHandleByIndex(0)
+                util = pynvml.nvmlDeviceGetUtilizationRates(h).gpu
+                mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+                temp = pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU)
+                data = {
+                    "gpu": util,
+                    "vram_used": mem.used / 2 ** 20,
+                    "vram_total": mem.total / 2 ** 20,
+                    "vram": mem.used / mem.total * 100 if mem.total else None,
+                    "gpu_temp": float(temp),
+                }
+                result = _record_gpu_metrics("nvidia:pynvml", data)
+                if result:
+                    return result
+            except Exception:
+                continue
+
+        if method == "cli":
+            if not shutil.which("nvidia-smi"):
+                continue
+            try:
+                util, used, total, temp = map(
+                    float,
+                    re.split(
+                        r",\s*",
+                        subprocess.check_output(
+                            [
+                                "nvidia-smi",
+                                "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
+                                "--format=csv,noheader,nounits",
+                            ],
+                            text=True,
+                            timeout=2,
+                        ).strip(),
+                    ),
+                )
+                data = {
+                    "gpu": util,
+                    "vram_used": used,
+                    "vram_total": total,
+                    "vram": used / total * 100 if total else None,
+                    "gpu_temp": temp,
+                }
+                result = _record_gpu_metrics("nvidia:cli", data)
+                if result:
+                    return result
+            except Exception:
+                continue
+
+        if method == "gputil":
+            try:
+                import GPUtil
+
+                gpu = GPUtil.getGPUs()[0]
+                util = gpu.load * 100
+                used = gpu.memoryUsed
+                total = gpu.memoryTotal
+                temp = gpu.temperature
+                data = {
+                    "gpu": util,
+                    "vram_used": used,
+                    "vram_total": total,
+                    "vram": used / total * 100 if total else None,
+                    "gpu_temp": temp,
+                }
+                result = _record_gpu_metrics("nvidia:gputil", data)
+                if result:
+                    return result
+            except Exception:
+                continue
+
+    return None
 
 
 def _windows_wmi_amd_metrics() -> dict | None:
@@ -441,102 +550,141 @@ def _windows_wmi_amd_metrics() -> dict | None:
 
 def _amd_gpu_metrics() -> dict | None:
     """Try reading metrics using AMD-specific tools."""
-    try:
-        import amdsmi
-        amdsmi.amdsmi_init()
-        handles = amdsmi.amdsmi_get_processor_handles()
-        if handles:
-            h = handles[0]
-            util = amdsmi.amdsmi_get_gpu_activity(h)["gfx_activity"]
-            vram = amdsmi.amdsmi_get_gpu_vram_usage(h)
-            used = vram["vram_used"] / 2 ** 20
-            total = vram["vram_total"] / 2 ** 20
-            temp = (
-                amdsmi.amdsmi_get_temp_metric(
-                    h,
-                    amdsmi.AmdSmiTemperatureMetric.CURRENT,
-                    amdsmi.AmdSmiTemperatureType.GPU_EDGE,
-                )["temperature"]
-                / 1000
-            )
-            amdsmi.amdsmi_shut_down()
-            return {
-                "gpu": util,
-                "vram_used": used,
-                "vram_total": total,
-                "vram": used / total * 100 if total else None,
-                "gpu_temp": temp,
-            }
-    except Exception:
-        pass
 
-    if shutil.which("amd-smi"):
-        try:
-            out = subprocess.check_output(
-                ["amd-smi", "metric", "--json", "--gpu", "0"],
-                text=True,
-                timeout=2,
-            )
-            import json
+    preferred = (GPU_METHOD or "").lower()
+    if preferred == "none":
+        return None
 
-            data = json.loads(out)["metric"][0]
-            util = data["gfx_activity"]
-            used = data["vram_usage"]["used_vram_bytes"] / 2 ** 20
-            total = data["vram_usage"]["total_vram_bytes"] / 2 ** 20
-            temp = data["temperature"]["edge_current_temp"] / 1000
-            return {
-                "gpu": util,
-                "vram_used": used,
-                "vram_total": total,
-                "vram": used / total * 100 if total else None,
-                "gpu_temp": temp,
-            }
-        except Exception:
-            pass
+    order: list[str]
+    if preferred in {"amd:amdsmi", "amd:cli", "amd:wmi", "amd:adlxpy", "amd:pyadl"}:
+        order = [preferred.split(":", 1)[1]]
+    else:
+        order = ["amdsmi", "cli", "wmi", "adlxpy", "pyadl"]
 
-    if platform.system() == "Windows":
-        data = _windows_wmi_amd_metrics()
-        if data:
-            return data
+    for method in order:
+        if method == "amdsmi":
+            try:
+                import amdsmi
 
-        try:
-            import adlxpy
+                amdsmi.amdsmi_init()
+                try:
+                    handles = amdsmi.amdsmi_get_processor_handles()
+                    if handles:
+                        h = handles[0]
+                        util = amdsmi.amdsmi_get_gpu_activity(h)["gfx_activity"]
+                        vram = amdsmi.amdsmi_get_gpu_vram_usage(h)
+                        used = vram["vram_used"] / 2 ** 20
+                        total = vram["vram_total"] / 2 ** 20
+                        temp = (
+                            amdsmi.amdsmi_get_temp_metric(
+                                h,
+                                amdsmi.AmdSmiTemperatureMetric.CURRENT,
+                                amdsmi.AmdSmiTemperatureType.GPU_EDGE,
+                            )["temperature"]
+                            / 1000
+                        )
+                        data = {
+                            "gpu": util,
+                            "vram_used": used,
+                            "vram_total": total,
+                            "vram": used / total * 100 if total else None,
+                            "gpu_temp": temp,
+                        }
+                        result = _record_gpu_metrics("amd:amdsmi", data)
+                        if result:
+                            return result
+                finally:
+                    try:
+                        amdsmi.amdsmi_shut_down()
+                    except Exception:
+                        pass
+            except Exception:
+                continue
 
-            helper = adlxpy.ADLXHelper()
-            if helper.initialize():
-                system = helper.get_system()
-                gpu = system.get_gpus().at(0)
-                perf = system.get_performance_monitoring_services()
-                metrics = perf.get_gpu_metrics(gpu)
+        if method == "cli":
+            if not shutil.which("amd-smi"):
+                continue
+            try:
+                out = subprocess.check_output(
+                    ["amd-smi", "metric", "--json", "--gpu", "0"],
+                    text=True,
+                    timeout=2,
+                )
+                import json
 
-                util = metrics.gpu_utilization()
-                vram = metrics.vram_usage()
-                used = vram.vram_used() / 2 ** 20
-                total = vram.vram_total() / 2 ** 20
-                temp = metrics.gpu_temperatures().edge_current()
-
-                helper.terminate()
-                return {
+                data = json.loads(out)["metric"][0]
+                util = data["gfx_activity"]
+                used = data["vram_usage"]["used_vram_bytes"] / 2 ** 20
+                total = data["vram_usage"]["total_vram_bytes"] / 2 ** 20
+                temp = data["temperature"]["edge_current_temp"] / 1000
+                data = {
                     "gpu": util,
                     "vram_used": used,
                     "vram_total": total,
                     "vram": used / total * 100 if total else None,
                     "gpu_temp": temp,
                 }
-        except Exception:
-            pass
+                result = _record_gpu_metrics("amd:cli", data)
+                if result:
+                    return result
+            except Exception:
+                continue
 
-        try:
-            from pyadl import ADLManager
+        if method == "wmi" and platform.system() == "Windows":
+            data = _windows_wmi_amd_metrics()
+            if data:
+                result = _record_gpu_metrics("amd:wmi", data)
+                if result:
+                    return result
 
-            devs = ADLManager.getInstance().getDevices()
-            if devs:
-                dev = devs[0]
-                util = dev.getCurrentUsage()
-                temp = dev.getCurrentTemperature()
-                return {"gpu": util, "gpu_temp": temp}
-        except Exception:
-            pass
+        if method == "adlxpy" and platform.system() == "Windows":
+            try:
+                import adlxpy
+
+                helper = adlxpy.ADLXHelper()
+                if helper.initialize():
+                    try:
+                        system = helper.get_system()
+                        gpu = system.get_gpus().at(0)
+                        perf = system.get_performance_monitoring_services()
+                        metrics = perf.get_gpu_metrics(gpu)
+
+                        util = metrics.gpu_utilization()
+                        vram = metrics.vram_usage()
+                        used = vram.vram_used() / 2 ** 20
+                        total = vram.vram_total() / 2 ** 20
+                        temp = metrics.gpu_temperatures().edge_current()
+
+                        data = {
+                            "gpu": util,
+                            "vram_used": used,
+                            "vram_total": total,
+                            "vram": used / total * 100 if total else None,
+                            "gpu_temp": temp,
+                        }
+                        result = _record_gpu_metrics("amd:adlxpy", data)
+                        if result:
+                            return result
+                    finally:
+                        helper.terminate()
+            except Exception:
+                continue
+
+        if method == "pyadl" and platform.system() == "Windows":
+            try:
+                from pyadl import ADLManager
+
+                devs = ADLManager.getInstance().getDevices()
+                if devs:
+                    dev = devs[0]
+                    util = dev.getCurrentUsage()
+                    temp = dev.getCurrentTemperature()
+                    data = {"gpu": util, "gpu_temp": temp}
+                    result = _record_gpu_metrics("amd:pyadl", data)
+                    if result:
+                        return result
+            except Exception:
+                continue
 
     return None
 
@@ -596,15 +744,27 @@ def init_gpu_metrics() -> None:
     """Определить производителя GPU и рабочие функции чтения метрик."""
     global GPU_VENDOR, GPU_METRIC_FUNCS, NVML_INITED, NVML_HANDLE
 
-    GPU_VENDOR = detect_gpu_vendor()
+    method_hint = (GPU_METHOD or "").lower()
 
-    candidates = []
-    if GPU_VENDOR == "nvidia":
+    if method_hint == "none":
+        GPU_VENDOR = None
+        GPU_METRIC_FUNCS = []
+        return
+
+    if method_hint.startswith("nvidia:"):
+        GPU_VENDOR = "nvidia"
         candidates = [_nvidia_gpu_metrics]
-    elif GPU_VENDOR == "amd":
+    elif method_hint.startswith("amd:"):
+        GPU_VENDOR = "amd"
         candidates = [_amd_gpu_metrics]
     else:
-        candidates = [_nvidia_gpu_metrics, _amd_gpu_metrics]
+        GPU_VENDOR = detect_gpu_vendor()
+        if GPU_VENDOR == "nvidia":
+            candidates = [_nvidia_gpu_metrics]
+        elif GPU_VENDOR == "amd":
+            candidates = [_amd_gpu_metrics]
+        else:
+            candidates = [_nvidia_gpu_metrics, _amd_gpu_metrics]
 
     GPU_METRIC_FUNCS = []
 
@@ -627,7 +787,11 @@ def init_gpu_metrics() -> None:
             continue
 
     if not GPU_METRIC_FUNCS:
-        GPU_METRIC_FUNCS = candidates
+        if not method_hint:
+            _set_gpu_method("none")
+            GPU_METRIC_FUNCS = []
+        else:
+            GPU_METRIC_FUNCS = candidates
 
 
 def gather_gpu_metrics() -> dict | None:
