@@ -41,7 +41,7 @@ GPU_VENDOR: str | None = None
 GPU_METRIC_FUNCS: list = []
 NVML_INITED = False
 NVML_HANDLE = None
-CPU_CORES = psutil.cpu_count(logical=False) or psutil.cpu_count() or 1
+CPU_CORES = psutil.cpu_count(logical=True) or psutil.cpu_count() or 1
 import websockets
 WS_LOOP: asyncio.AbstractEventLoop | None = None
 WS_CONN: websockets.WebSocketClientProtocol | None = None
