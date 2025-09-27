@@ -24,6 +24,7 @@ import subprocess
 import socket
 import math
 
+import heapq
 import psutil
 from PIL import Image
 
@@ -399,10 +400,10 @@ def gather_top_processes(
             time.sleep(sample_delay)
 
     now = time.time()
-    aggregated: dict[str, dict[str, float | int]] = {}
+    aggregated: dict[str, dict[str, object]] = {}
     alive: set[int] = set()
 
-    for p in psutil.process_iter(["pid", "name", "memory_info"]):
+    for p in psutil.process_iter(["pid", "name"]):
         try:
             name_raw = p.info.get("name") or str(p.pid)
             if name_raw.lower() == "system idle process":
@@ -417,18 +418,16 @@ def gather_top_processes(
                     cpu = (cpu_time - prev[0]) / dt * 100
             PROC_CACHE[p.pid] = (cpu_time, now)
             alive.add(p.pid)
-
-            mem_info = p.info.get("memory_info")
-            mem = mem_info.rss if mem_info else p.memory_info().rss
             cpu /= CPU_CORES
 
             key = name_raw.lower()
             agg = aggregated.setdefault(
-                key, {"name": name_raw, "cpu": 0.0, "ram": 0, "count": 0}
+                key,
+                {"name": name_raw, "cpu": 0.0, "ram": 0, "count": 0, "pids": []},
             )
             agg["cpu"] += cpu
-            agg["ram"] += mem
             agg["count"] += 1
+            agg["pids"].append(p.pid)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
@@ -436,15 +435,25 @@ def gather_top_processes(
         if pid not in alive:
             PROC_CACHE.pop(pid, None)
 
+    top_entries = heapq.nlargest(count, aggregated.values(), key=lambda x: x["cpu"])
+
+    for entry in top_entries:
+        total_ram = 0
+        for pid in entry["pids"]:
+            try:
+                total_ram += psutil.Process(pid).memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        entry["ram"] = total_ram
+
     res = []
-    for data in aggregated.values():
+    for data in top_entries:
         name = data["name"]
         if data["count"] > 1:
             name = f"{name} ({data['count']})"
         res.append({"name": name, "cpu": data["cpu"], "ram": data["ram"]})
 
-    res.sort(key=lambda x: x["cpu"], reverse=True)
-    return res[:count]
+    return res
 
 def get_cpu_temp() -> str | None:
     # ── 1) стандартный psutil ─────────────────────────────
