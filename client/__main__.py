@@ -24,6 +24,7 @@ import subprocess
 import socket
 import math
 
+import heapq
 import psutil
 from PIL import Image
 
@@ -41,7 +42,7 @@ GPU_VENDOR: str | None = None
 GPU_METRIC_FUNCS: list = []
 NVML_INITED = False
 NVML_HANDLE = None
-CPU_CORES = psutil.cpu_count(logical=False) or psutil.cpu_count() or 1
+CPU_CORES = psutil.cpu_count(logical=True) or psutil.cpu_count() or 1
 import websockets
 WS_LOOP: asyncio.AbstractEventLoop | None = None
 WS_CONN: websockets.WebSocketClientProtocol | None = None
@@ -356,14 +357,51 @@ def gather_disks_metrics() -> List[dict]:
     return res
 
 
-def gather_top_processes(count: int = 5) -> List[dict]:
+PROC_SAMPLE_DELAY = 0.2
+
+
+def _refresh_proc_cache() -> None:
+    """Обновить кэш времени CPU для процессов без расчёта процентов."""
+
+    now = time.time()
+    alive: set[int] = set()
+    for p in psutil.process_iter(["pid"]):
+        try:
+            cpu_time = sum(p.cpu_times()[:2])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        PROC_CACHE[p.pid] = (cpu_time, now)
+        alive.add(p.pid)
+
+    # удалить процессы, которых больше нет
+    for pid in list(PROC_CACHE):
+        if pid not in alive:
+            PROC_CACHE.pop(pid, None)
+
+
+def gather_top_processes(
+    count: int = 5,
+    *,
+    instant: bool = False,
+    sample_delay: float = PROC_SAMPLE_DELAY,
+) -> List[dict]:
     """Вернуть топ процессов по загрузке CPU с учётом RAM.
 
     Процессы с одинаковым именем объединяются (суммируются их CPU и RAM).
+
+    Если ``instant`` установлен, собирается дополнительный моментальный срез
+    CPU с небольшой задержкой, что позволяет показать актуальную картину,
+    не дожидаясь следующего вызова функции.
     """
 
+    if instant:
+        _refresh_proc_cache()
+        if sample_delay > 0:
+            time.sleep(sample_delay)
+
     now = time.time()
-    aggregated: dict[str, dict[str, float | int]] = {}
+    aggregated: dict[str, dict[str, object]] = {}
+    alive: set[int] = set()
 
     for p in psutil.process_iter(["pid", "name"]):
         try:
@@ -379,27 +417,43 @@ def gather_top_processes(count: int = 5) -> List[dict]:
                 if dt > 0:
                     cpu = (cpu_time - prev[0]) / dt * 100
             PROC_CACHE[p.pid] = (cpu_time, now)
-
-            mem = p.memory_info().rss
+            alive.add(p.pid)
             cpu /= CPU_CORES
 
             key = name_raw.lower()
-            agg = aggregated.setdefault(key, {"name": name_raw, "cpu": 0.0, "ram": 0, "count": 0})
+            agg = aggregated.setdefault(
+                key,
+                {"name": name_raw, "cpu": 0.0, "ram": 0, "count": 0, "pids": []},
+            )
             agg["cpu"] += cpu
-            agg["ram"] += mem
             agg["count"] += 1
+            agg["pids"].append(p.pid)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
+    for pid in list(PROC_CACHE):
+        if pid not in alive:
+            PROC_CACHE.pop(pid, None)
+
+    top_entries = heapq.nlargest(count, aggregated.values(), key=lambda x: x["cpu"])
+
+    for entry in top_entries:
+        total_ram = 0
+        for pid in entry["pids"]:
+            try:
+                total_ram += psutil.Process(pid).memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        entry["ram"] = total_ram
+
     res = []
-    for data in aggregated.values():
+    for data in top_entries:
         name = data["name"]
         if data["count"] > 1:
             name = f"{name} ({data['count']})"
         res.append({"name": name, "cpu": data["cpu"], "ram": data["ram"]})
 
-    res.sort(key=lambda x: x["cpu"], reverse=True)
-    return res[:count]
+    return res
 
 def get_cpu_temp() -> str | None:
     # ── 1) стандартный psutil ─────────────────────────────
@@ -865,7 +919,7 @@ def gather_metrics(full: bool = False) -> dict:
     }
     if full:
         data["disks"] = gather_disks_metrics()
-        data["top_procs"] = gather_top_processes()
+        data["top_procs"] = gather_top_processes(instant=True)
     else:
         data["disks"] = []
         data["top_procs"] = []
@@ -1130,7 +1184,7 @@ def do_shutdown():
 async def _send_metrics_loop(ws: websockets.WebSocketClientProtocol) -> None:
     """Периодическая отправка метрик."""
     psutil.cpu_percent(interval=None)
-    gather_top_processes()
+    _refresh_proc_cache()
     init_gpu_metrics()
     while True:
         try:
