@@ -46,6 +46,7 @@ CPU_CORES = psutil.cpu_count(logical=True) or psutil.cpu_count() or 1
 import websockets
 WS_LOOP: asyncio.AbstractEventLoop | None = None
 WS_CONN: websockets.WebSocketClientProtocol | None = None
+WS_MAIN_TASK: asyncio.Task | None = None
 TRAY_ICON: object | None = None
 WS_PENDING: list[dict] = []
 WS_PENDING_LOCK = threading.Lock()
@@ -283,7 +284,10 @@ def _tray_exit(icon, item) -> None:
     icon.visible = False
     icon.stop()
     if WS_LOOP:
-        WS_LOOP.call_soon_threadsafe(WS_LOOP.stop)
+        def _cancel_main() -> None:
+            if WS_MAIN_TASK and not WS_MAIN_TASK.done():
+                WS_MAIN_TASK.cancel()
+        WS_LOOP.call_soon_threadsafe(_cancel_main)
     else:
         os._exit(0)
 
@@ -1246,7 +1250,7 @@ async def _recv_loop(ws: websockets.WebSocketClientProtocol) -> None:
 
 async def ws_main() -> None:
     """Main loop using WebSockets."""
-    global WS_LOOP, WS_CONN
+    global WS_LOOP, WS_CONN, WS_MAIN_TASK
     uri = f"{'wss' if SCHEME == 'https' else 'ws'}://{SERVER_IP}:{PORT}/ws/{SECRET}"
     ssl_ctx = None
     if SCHEME == 'https':
@@ -1259,38 +1263,55 @@ async def ws_main() -> None:
         else:
             ssl_ctx = ssl._create_unverified_context()
     _ensure_fp(SERVER)
-    while True:
-        try:
-            async with websockets.connect(uri, ssl=ssl_ctx) as ws:
-                log.info("Agent WS connected → %s", uri)
-                WS_LOOP = asyncio.get_running_loop()
-                WS_CONN = ws
-                with WS_PENDING_LOCK:
-                    pending = WS_PENDING.copy()
-                    WS_PENDING.clear()
-                for obj in pending:
+    WS_LOOP = asyncio.get_running_loop()
+    WS_MAIN_TASK = asyncio.current_task()
+    try:
+        while True:
+            try:
+                async with websockets.connect(uri, ssl=ssl_ctx) as ws:
+                    log.info("Agent WS connected → %s", uri)
+                    WS_CONN = ws
+                    with WS_PENDING_LOCK:
+                        queued = WS_PENDING.copy()
+                        WS_PENDING.clear()
+                    for obj in queued:
+                        try:
+                            await ws.send(json.dumps(obj))
+                        except Exception as exc:
+                            log.error("WS queued send failed: %s", exc)
+                            with WS_PENDING_LOCK:
+                                WS_PENDING.append(obj)
+                            break
+                    tasks = [
+                        asyncio.create_task(_send_metrics_loop(ws)),
+                        asyncio.create_task(_recv_loop(ws)),
+                    ]
                     try:
-                        await ws.send(json.dumps(obj))
-                    except Exception as exc:
-                        log.error("WS queued send failed: %s", exc)
-                        with WS_PENDING_LOCK:
-                            WS_PENDING.append(obj)
-                        break
-                sender = asyncio.create_task(_send_metrics_loop(ws))
-                receiver = asyncio.create_task(_recv_loop(ws))
-                done, pending = await asyncio.wait(
-                    [sender, receiver], return_when=asyncio.FIRST_EXCEPTION
-                )
-                for t in pending:
-                    t.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
-        except Exception as exc:
-            log.error("WS connection error: %s", exc)
-        finally:
-            WS_CONN = None
-            WS_LOOP = None
-        log.info("WS reconnecting in %ss…", RECONNECT_DELAY)
-        await asyncio.sleep(RECONNECT_DELAY)
+                        _, pending_tasks = await asyncio.wait(
+                            tasks, return_when=asyncio.FIRST_EXCEPTION
+                        )
+                        for t in pending_tasks:
+                            t.cancel()
+                    finally:
+                        for task in tasks:
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.error("WS connection error: %s", exc)
+            finally:
+                WS_CONN = None
+            log.info("WS reconnecting in %ss…", RECONNECT_DELAY)
+            await asyncio.sleep(RECONNECT_DELAY)
+    except asyncio.CancelledError:
+        log.info("WS main cancelled, shutting down")
+        return
+    finally:
+        WS_CONN = None
+        WS_LOOP = None
+        WS_MAIN_TASK = None
 
 # ────────────────────────── main loop ─────────────────────────────────────
 
