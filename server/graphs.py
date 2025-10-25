@@ -106,10 +106,16 @@ def _plot_segments(ax, ts, ys, segments, *args, **kwargs):
 
 def _make_figure(seconds: int):
     """Размер фигуры пропорционален запрашиваемому промежутку времени."""
-    days = seconds / 86_400
-    width = 12
-    if days >= 1:
-        width *= 1.5 if days < 1.5 else days
+    base_width = 12
+    width = base_width
+    hours = seconds / 3600
+    if hours >= 6:
+        width += base_width
+    if hours >= 12:
+        width += base_width
+    if hours >= 24:
+        days = seconds // 86_400
+        width += base_width * days
     dpi = 500
     fig, ax = plt.subplots(figsize=(width, 6), dpi=dpi)
 

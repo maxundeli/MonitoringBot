@@ -461,10 +461,11 @@ async def check_stability_done(ctx: ContextTypes.DEFAULT_TYPE):
     plt.close(fig)
     gc.collect()
 
-    await ctx.bot.send_photo(
-        chat_id=chat_id,
-        photo=InputFile(buf, filename="stability.png"),
-    )
+    file = InputFile(buf, filename="stability.png")
+    if total_seconds >= 21600:
+        await ctx.bot.send_document(chat_id=chat_id, document=file)
+    else:
+        await ctx.bot.send_photo(chat_id=chat_id, photo=file)
 
     STAB_JOBS.pop(secret, None)
     job.schedule_removal()
@@ -1031,7 +1032,7 @@ async def cmd_plot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Данных за этот период нет.")
 
     caption = f"{'/'.join([m.upper() for m in metrics])} за {timedelta(seconds=seconds)}"
-    if seconds >= 86400:
+    if seconds >= 21600:
         doc = InputFile(buf, filename="plot.png")
         await ctx.bot.send_document(chat_id=update.effective_chat.id, document=doc, caption=caption)
         buf.close()
@@ -1370,7 +1371,7 @@ async def cb_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await q.edit_message_text("Данных за этот период нет.")
 
         caption = f"{metric.upper()} за {timedelta(seconds=seconds)}"
-        if seconds >= 86400:
+        if seconds >= 21600:
             doc = InputFile(buf, filename=f"{metric}_{seconds}.png")
             await ctx.bot.send_document(
                 chat_id=q.message.chat_id,
